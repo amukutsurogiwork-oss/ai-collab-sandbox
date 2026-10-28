@@ -25,3 +25,9 @@ test("an anonymous visitor cannot read a private document", () => {
 test("a missing document is denied", () => {
   assert.equal(canReadDocument({ id: "user-a" }, null), false);
 });
+
+test("an authenticated non-owner cannot read a private document", () => {
+  assert.equal(canReadDocument({ id: "user-b" }, {
+    ownerId: "user-a", isPublic: false,
+  }), false);
+});

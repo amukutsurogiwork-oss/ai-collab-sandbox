@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
+      - uses: actions/checkout@v4
       - name: Request @codex review if Codex has not started on this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,23 +33,24 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          comments() { gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate | jq -s 'add // []'; }
+          fetch() {
+            gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate | jq -s 'add // []' > "$RUNNER_TEMP/comments.json"
+            gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --paginate | jq -s 'add // []' > "$RUNNER_TEMP/reviews.json"
+            node scripts/codex-request-decision.js "$SHA" "$RUNNER_TEMP/comments.json" "$RUNNER_TEMP/reviews.json" 3
+          }
 
-          # Give Codex's own automatic review time to start (it usually does within ~20s).
+          # Give Codex time to start on its own (comment or review on this commit).
           for i in 1 2 3 4 5 6; do
             sleep 15
-            started=$(comments | jq --arg sha "$SHA" 'map(select(.user.login=="chatgpt-codex-connector[bot]" and (.body|contains($sha)))) | length')
-            if [ "$started" -gt 0 ]; then
+            if [ "$(fetch)" = "started" ]; then
               echo "Codex already started on $SHA; nothing to request."
               exit 0
             fi
           done
 
-          # Safety caps: once per commit, at most 3 automatic requests per PR.
-          mine=$(comments | jq 'map(select(.body|contains("codex-auto-request:"))) | length')
-          same=$(comments | jq --arg sha "$SHA" 'map(select(.body|contains("codex-auto-request:" + $sha))) | length')
-          if [ "$same" -gt 0 ] || [ "$mine" -ge 3 ]; then
-            echo "Already requested for this commit or cap reached (same=$same total=$mine)."
+          # Once per commit, at most 3 automatic requests per PR.
+          if [ "$(fetch)" != "request" ]; then
+            echo "Skipping request (already requested or cap reached)."
             exit 0
           fi
 

@@ -1,0 +1,12 @@
+{
+  "name": "ai-collab-sandbox",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Synthetic Claude × Codex PR review integration test",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

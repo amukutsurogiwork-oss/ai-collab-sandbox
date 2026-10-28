@@ -1,0 +1,58 @@
+# Sandbox-only trial. Requests a Codex review once per pushed commit on claude/* PRs
+# (only when Codex has not already started one). Review only: Codex never edits code.
+# Uses the built-in GITHUB_TOKEN with pull-requests: write. No secrets, no paid services.
+name: Request Codex review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: codex-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Request @codex review if Codex has not started on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          comments() { gh api "repos/$REPO/issues/$PR/comments?per_page=100" --paginate | jq -s 'add // []'; }
+
+          # Give Codex's own automatic review time to start (it usually does within ~20s).
+          for i in 1 2 3 4 5 6; do
+            sleep 15
+            started=$(comments | jq --arg sha "$SHA" 'map(select(.user.login=="chatgpt-codex-connector[bot]" and (.body|contains($sha)))) | length')
+            if [ "$started" -gt 0 ]; then
+              echo "Codex already started on $SHA; nothing to request."
+              exit 0
+            fi
+          done
+
+          # Safety caps: once per commit, at most 3 automatic requests per PR.
+          mine=$(comments | jq 'map(select(.body|contains("codex-auto-request:"))) | length')
+          same=$(comments | jq --arg sha "$SHA" 'map(select(.body|contains("codex-auto-request:" + $sha))) | length')
+          if [ "$same" -gt 0 ] || [ "$mine" -ge 3 ]; then
+            echo "Already requested for this commit or cap reached (same=$same total=$mine)."
+            exit 0
+          fi
+
+          gh pr comment "$PR" --repo "$REPO" --body "@codex review
+
+          <!-- codex-auto-request:${SHA} -->
+          Automatic review request for \`${SHA:0:7}\` (GitHub Actions, sandbox trial)."

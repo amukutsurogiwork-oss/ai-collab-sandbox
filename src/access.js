@@ -7,7 +7,7 @@
 function canReadDocument(viewer, document) {
   if (!document || typeof document !== "object") return false;
   if (document.isPublic === true) return true;
-  return Boolean(viewer && viewer.id && viewer.id === document.ownerId);
+  return Boolean(viewer && viewer.id);
 }
 
 module.exports = { canReadDocument };

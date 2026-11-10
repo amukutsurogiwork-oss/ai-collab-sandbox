@@ -7,6 +7,15 @@ const STATUSES = ["open", "cancel"];
 const ALWAYS_APPROVAL = ["paid", "production", "deploy", "secrets", "permissions", "delete", "publish"];
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 const SAFE_THREAD = /^[1-9][0-9]*$/;
+const SAFE_SHA = /^[0-9a-f]{7,40}$/;
+
+/** True when a (possibly short) SHA names the same commit as a full SHA. */
+function sameSha(a, b) {
+  if (!a || !b) return false;
+  const x = String(a).toLowerCase();
+  const y = String(b).toLowerCase();
+  return x.length >= 7 && y.length >= 7 && (x.startsWith(y) || y.startsWith(x));
+}
 
 /**
  * Parse a "[MONE-REQUEST] id=<ID> lane=<lane> op=<op> status=open|cancel sha=<SHA>" comment.
@@ -32,6 +41,9 @@ function parseRequest(body, meta = {}) {
     repo: meta.repo || "",
     thread: meta.thread == null ? "" : String(meta.thread),
     commentId: meta.commentId == null ? null : String(meta.commentId),
+    // Set by the caller from GitHub's own data (the comment author is the
+    // repository owner). Never taken from the comment text.
+    trusted: meta.trusted === true,
   };
 }
 
@@ -59,6 +71,10 @@ function validateProject(p) {
   for (const field of ["approvalRequired", "guiOperations"]) {
     if (p[field] !== undefined && !isStrings(p[field])) errors.push(`${field} must be an array of strings`);
   }
+  // Operations are echoed into records, so they must use the safe character set.
+  for (const field of ["allowedOperations", "approvalRequired", "guiOperations"]) {
+    if (isStrings(p[field]) && p[field].some((op) => !SAFE_ID.test(op))) errors.push(`${field} has unsafe characters`);
+  }
   if (isStrings(p.allowedOperations) && isStrings(p.guiOperations)
       && p.guiOperations.some((op) => !p.allowedOperations.includes(op))) {
     errors.push("guiOperations must be listed in allowedOperations");
@@ -74,6 +90,7 @@ function validateProject(p) {
 function decide(request, registry, ledger = {}) {
   const result = (action, reason, extra = {}) => ({ action, reason, ...extra });
   if (!request) return result("ignore", "not a request");
+  if (request.trusted !== true) return result("ignore-untrusted", "author is not the repository owner");
 
   const project = (registry.projects || []).find((p) => p.repo === request.repo);
   if (!project) return result("reject", "project not registered");
@@ -81,6 +98,8 @@ function decide(request, registry, ledger = {}) {
   if (!STATUSES.includes(request.status)) return result("reject", "unknown status");
   if (!SAFE_THREAD.test(request.thread)) return result("reject", "invalid thread");
   if (!SAFE_ID.test(request.id)) return result("reject", "invalid id");
+  if (request.sha !== null && !SAFE_SHA.test(request.sha)) return result("reject", "invalid sha");
+  if (request.flags.some((f) => !SAFE_ID.test(f))) return result("reject", "invalid flags");
 
   const key = requestKey(request);
   const entry = ledger[key];
@@ -144,6 +163,7 @@ function decide(request, registry, ledger = {}) {
  */
 function guardSideEffect(request, latest = {}) {
   const stop = (reason) => ({ ok: false, reason });
+  if (request.trusted !== true) return stop("author is not the repository owner");
   if (request.status !== "open") return stop("request is not open");
   const entry = (latest.ledger || {})[requestKey(request)];
   if (entry && entry.state === "cancelled") return stop("cancelled");
@@ -163,8 +183,8 @@ function guardSideEffect(request, latest = {}) {
   if (typeof latest.isPullRequest !== "boolean") return stop("target type unknown");
   if (latest.isPullRequest && !entry.sha) return stop("pull request needs sha");
   if (entry.sha && !latest.headSha) return stop("head sha unknown");
-  if (entry.sha && entry.sha !== latest.headSha) return stop("stale sha");
+  if (entry.sha && !sameSha(entry.sha, latest.headSha)) return stop("stale sha");
   return { ok: true, reason: "ok" };
 }
 
-module.exports = { LANES, parseRequest, requestKey, validateProject, decide, guardSideEffect };
+module.exports = { LANES, parseRequest, requestKey, validateProject, decide, guardSideEffect, sameSha };

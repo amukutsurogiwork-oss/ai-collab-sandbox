@@ -7,7 +7,7 @@ const MARK = /<!-- amone:v1 (.+?) -->/;
 
 const LANE_NOTES = {
   chat: "担当: アムChat。アムChatは自動では起動しません。よしひろさんがアムに、この依頼を見るよう伝えてください。",
-  work: "担当: アムWork(画面操作)。アムは自動では起動しません。よしひろさんがアムに、この依頼を見るよう伝えてください。",
+  work: "担当: アムWork(画面操作)。PRなら、Workの予定タスク「AMONE Work依頼受付」が自動で動きます。Issueでは自動では動かないので、よしひろさんがアムに伝えてください。",
   codex: "担当: CodexのPRレビュー。モネがこのPRでレビューを頼みます。",
   mone: "担当: モネ。",
 };
@@ -149,9 +149,13 @@ function plan(input) {
 
   if (d.action === "route" || d.action === "cancel") {
     const key = requestKey(request);
-    const body = renderState({ kind: "state", key, entry: d.ledger[key] });
+    const entry = d.ledger[key];
+    const body = renderState({ kind: "state", key, entry });
     if (!body) return { action: "halt", reason: "cannot render record", body: null };
-    return { action: d.action, reason: d.reason, body };
+    // On a pull request, the Work label is what wakes the ChatGPT Work task.
+    const out = { action: d.action, reason: d.reason, body };
+    if (input.isPullRequest && entry.lane === "work") out.label = d.action === "route" ? "add" : "remove";
+    return out;
   }
 
   if (d.action === "reject" || d.action === "needs-approval") {
@@ -165,4 +169,4 @@ function plan(input) {
   return { action: d.action, reason: d.reason, body: null };
 }
 
-module.exports = { plan, stateFromComments, renderNotice, BOT_LOGIN };
+module.exports = { plan, stateFromComments, renderNotice, BOT_LOGIN, WORK_LABEL: "amone-work" };

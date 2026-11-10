@@ -226,3 +226,17 @@ test("the original request edited to another ID after routing is not accepted ag
   assert.equal(r.reason, "comment already bound to another request");
   assert.doesNotMatch(r.body, /AMONE-ROUTED/);
 });
+
+// ---- Work lane in the real registry ----
+
+test("the sandbox registry routes a GUI check to Work and refuses other Work operations", () => {
+  const real = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "collab", "registry.json"), "utf8"));
+  const repo = real.projects[0].repo;
+  const sha = "abc1234def5678abc1234def5678abc1234def56";
+  const go = (body) => plan({ repo, thread: 3, isPullRequest: true, headSha: sha, comment: owner(7, body), comments: [], registry: real });
+  const ok = go("[MONE-REQUEST] id=W1 lane=work op=screen-check sha=abc1234");
+  assert.equal(ok.action, "route");
+  assert.match(ok.body, /^\[AMONE-ROUTED\] request=W1 lane=work op=screen-check /);
+  assert.match(ok.body, /AMONE Work依頼受付/);
+  assert.equal(go("[MONE-REQUEST] id=W2 lane=work op=design sha=abc1234").reason, "work lane needs a GUI operation");
+});

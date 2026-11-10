@@ -3,10 +3,22 @@
     {
       "repo": "amukutsurogiwork-oss/ai-collab-sandbox",
       "contact": "mone",
-      "allowedLanes": ["chat", "codex", "mone"],
-      "allowedOperations": ["design", "research", "pr-review"],
+      "allowedLanes": [
+        "chat",
+        "work",
+        "codex",
+        "mone"
+      ],
+      "allowedOperations": [
+        "design",
+        "research",
+        "pr-review",
+        "screen-check"
+      ],
       "approvalRequired": [],
-      "guiOperations": [],
+      "guiOperations": [
+        "screen-check"
+      ],
       "notify": "github-issue",
       "priority": "normal"
     }

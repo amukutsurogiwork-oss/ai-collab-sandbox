@@ -240,3 +240,21 @@ test("the sandbox registry routes a GUI check to Work and refuses other Work ope
   assert.match(ok.body, /AMONE Work依頼受付/);
   assert.equal(go("[MONE-REQUEST] id=W2 lane=work op=design sha=abc1234").reason, "work lane needs a GUI operation");
 });
+
+// ---- Work label: added when a Work request is routed on a PR, removed on cancel ----
+
+test("a Work request on a pull request asks for the Work label; cancelling it asks to remove it", () => {
+  const reg = { projects: [{ repo: "o/p", allowedLanes: ["chat", "work"], allowedOperations: ["design", "screen-check"], guiOperations: ["screen-check"] }] };
+  const sha = "abc1234def5678abc1234def5678abc1234def56";
+  const pr = (comment, comments = []) => plan({ repo: "o/p", thread: 3, isPullRequest: true, headSha: sha, comment, comments, registry: reg });
+  const ask = owner(7, "[MONE-REQUEST] id=W1 lane=work op=screen-check sha=abc1234");
+  const routed = pr(ask);
+  assert.equal(routed.label, "add");
+  const cancel = owner(7, "[MONE-REQUEST] id=W1 status=cancel");
+  assert.equal(pr(cancel, [cancel, bot(routed.body)]).label, "remove");
+  // chat requests and Issues never touch the label
+  assert.equal(pr(owner(8, "[MONE-REQUEST] id=C1 lane=chat op=design sha=abc1234")).label, undefined);
+  const onIssue = plan({ repo: "o/p", thread: 3, isPullRequest: false, headSha: null, comment: owner(9, "[MONE-REQUEST] id=W2 lane=work op=screen-check"), comments: [], registry: reg });
+  assert.equal(onIssue.action, "route");
+  assert.equal(onIssue.label, undefined);
+});

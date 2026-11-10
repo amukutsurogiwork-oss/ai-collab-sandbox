@@ -20,7 +20,8 @@ jobs:
   intake:
     if: >-
       github.event.comment.author_association == 'OWNER' &&
-      startsWith(github.event.comment.body, '[MONE-REQUEST]')
+      (startsWith(github.event.comment.body, '[MONE-REQUEST]') ||
+       startsWith(github.event.comment.body, '[AMU-RESULT]'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

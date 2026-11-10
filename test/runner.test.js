@@ -160,3 +160,50 @@ test("a pull request head that is not a 40-character hex SHA stops the run", asy
     assert.strictEqual(api.posted.length, 0);
   }
 });
+
+// ---- Work label handling in the runner ----
+
+const workRegistry = { projects: [{ repo: "o/p", allowedLanes: ["work"], allowedOperations: ["screen-check"], guiOperations: ["screen-check"] }] };
+function labelApi(steps, opts = {}) {
+  const api = fakeApi(steps);
+  api.calls = [];
+  const post = api.postComment;
+  api.postComment = async (n, b) => { api.calls.push("post"); return post(n, b); };
+  api.addLabel = async () => { api.calls.push("add"); if (opts.failAdd) throw new Error("E_API_POST_403"); };
+  api.removeLabel = async () => { api.calls.push("remove"); };
+  return api;
+}
+const workAsk = ask("[MONE-REQUEST] id=W1 lane=work op=screen-check sha=abc1234");
+
+test("the Work label is added before the routing comment is posted", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s]);
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["add", "post"]);
+});
+
+test("if the label cannot be added, nothing is posted", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s], { failAdd: true });
+  await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
+  assert.deepStrictEqual(api.calls, ["add"]);
+});
+
+test("an owner [AMU-RESULT] on a pull request removes the Work label and posts nothing", async () => {
+  const result = ask("[AMU-RESULT] request=W1\n結果\n次の担当: モネ");
+  const api = labelApi([{ comment: result, comments: [result], headSha: SHA }]);
+  const ev = { ...event(true), comment: { id: 7, body: result.body } };
+  await run({ event: ev, repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["remove"]);
+});
+
+test("an [AMU-RESULT] by someone else, or on an Issue, does not touch the label", async () => {
+  const stranger = { ...ask("[AMU-RESULT] request=W1"), author_association: "NONE", user: { login: "x", id: 99, type: "User" } };
+  const api1 = labelApi([{ comment: stranger, comments: [stranger], headSha: SHA }]);
+  await run({ event: { ...event(true), comment: { id: 7, body: stranger.body } }, repo: "o/p", registry: workRegistry, api: api1 });
+  assert.deepStrictEqual(api1.calls, []);
+  const onIssue = ask("[AMU-RESULT] request=W1");
+  const api2 = labelApi([{ comment: onIssue, comments: [onIssue] }]);
+  await run({ event: { ...event(false), comment: { id: 7, body: onIssue.body } }, repo: "o/p", registry: workRegistry, api: api2 });
+  assert.deepStrictEqual(api2.calls, []);
+});

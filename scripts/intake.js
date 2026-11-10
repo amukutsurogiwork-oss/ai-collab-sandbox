@@ -7,7 +7,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { plan } = require("../src/intake");
+const { plan, WORK_LABEL } = require("../src/intake");
 
 const MAX_PAGES = 10;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -55,6 +55,14 @@ function githubApi(repo, token, base) {
       return pr && pr.head ? pr.head.sha : null;
     },
     postComment: (number, body) => gh("POST", `/repos/${repo}/issues/${number}/comments`, { body }),
+    addLabel: (number) => gh("POST", `/repos/${repo}/issues/${number}/labels`, { labels: [WORK_LABEL] }),
+    removeLabel: async (number) => {
+      try {
+        await gh("DELETE", `/repos/${repo}/issues/${number}/labels/${encodeURIComponent(WORK_LABEL)}`);
+      } catch (err) {
+        if (!(err instanceof IntakeError && err.code === "E_API_DELETE_404")) throw err; // already gone
+      }
+    },
   };
 }
 
@@ -98,7 +106,31 @@ async function snapshot({ event, repo, registry, api }) {
   return { ...result, seen };
 }
 
+/**
+ * Amu's Work result on a pull request ends the Work request: take the Work
+ * label off so that further comments on this PR no longer wake Work.
+ * Only the owner's [AMU-RESULT] on a PR counts. Posts nothing.
+ */
+async function finishWork(ctx, log) {
+  const { event, api } = ctx;
+  if (!event.issue.pull_request) return log("intake: result on an Issue; nothing to do");
+  const ownerId = event.repository && event.repository.owner ? event.repository.owner.id : null;
+  if (ownerId == null) throw new IntakeError("E_OWNER_UNKNOWN");
+  const comment = await api.getComment(event.comment.id);
+  if (!comment) return log("intake: comment no longer exists; nothing to do");
+  if (!isValidComment(comment)) throw new IntakeError("E_COMMENT_MALFORMED");
+  const isOwner = comment.author_association === "OWNER" && comment.user.id === ownerId;
+  if (!isOwner || !comment.body.trimStart().startsWith("[AMU-RESULT]")) {
+    return log("intake: not an owner result; nothing to do");
+  }
+  await api.removeLabel(event.issue.number);
+  log("intake: work label removed");
+}
+
 async function run(ctx, log = () => {}) {
+  if (String(ctx.event.comment && ctx.event.comment.body || "").trimStart().startsWith("[AMU-RESULT]")) {
+    return finishWork(ctx, log);
+  }
   const first = await snapshot(ctx);
   if (!first) return log("intake: comment no longer exists; nothing to do");
   log(`intake: action=${first.action} reason=${first.reason} post=${first.body ? "yes" : "no"}`);
@@ -108,10 +140,15 @@ async function run(ctx, log = () => {}) {
   // author, every other comment incl. cancels and results already posted, and
   // the PR head) and plan again. Post only if nothing changed the outcome.
   const again = await snapshot(ctx);
-  if (!again || again.body !== first.body || again.seen !== first.seen) {
+  if (!again || again.body !== first.body || again.seen !== first.seen || again.label !== first.label) {
     return log("intake: state changed while processing; stopping without posting");
   }
-  await ctx.api.postComment(ctx.event.issue.number, first.body);
+  const number = ctx.event.issue.number;
+  // The label must be on the PR before the routing comment exists, because the
+  // comment is what wakes the Work task. If the label fails, post nothing.
+  if (first.label === "add") await ctx.api.addLabel(number);
+  await ctx.api.postComment(number, first.body);
+  if (first.label === "remove") await ctx.api.removeLabel(number);
 }
 
 if (require.main === module) {

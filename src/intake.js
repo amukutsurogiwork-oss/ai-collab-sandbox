@@ -149,9 +149,13 @@ function plan(input) {
 
   if (d.action === "route" || d.action === "cancel") {
     const key = requestKey(request);
-    const body = renderState({ kind: "state", key, entry: d.ledger[key] });
+    const entry = d.ledger[key];
+    const body = renderState({ kind: "state", key, entry });
     if (!body) return { action: "halt", reason: "cannot render record", body: null };
-    return { action: d.action, reason: d.reason, body };
+    // On a pull request, the Work label is what wakes the ChatGPT Work task.
+    const out = { action: d.action, reason: d.reason, body };
+    if (input.isPullRequest && entry.lane === "work") out.label = d.action === "route" ? "add" : "remove";
+    return out;
   }
 
   if (d.action === "reject" || d.action === "needs-approval") {
@@ -165,4 +169,4 @@ function plan(input) {
   return { action: d.action, reason: d.reason, body: null };
 }
 
-module.exports = { plan, stateFromComments, renderNotice, BOT_LOGIN };
+module.exports = { plan, stateFromComments, renderNotice, BOT_LOGIN, WORK_LABEL: "amone-work" };

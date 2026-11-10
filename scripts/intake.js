@@ -28,15 +28,20 @@ async function gh(method, url, body) {
   return res.json();
 }
 
-async function listComments(number) {
+const MAX_PAGES = 10;
+
+// Partial history must never be treated as authoritative: if the last allowed
+// page is still full, stop (throw) instead of planning from a truncated ledger.
+async function listComments(number, fetchPage = (page) =>
+  gh("GET", `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`)) {
   const all = [];
-  for (let page = 1; page <= 10; page += 1) {
-    const batch = await gh("GET", `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`);
-    if (!batch || batch.length === 0) break;
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const batch = await fetchPage(page);
+    if (!batch || batch.length === 0) return all;
     all.push(...batch);
-    if (batch.length < 100) break;
+    if (batch.length < 100) return all;
   }
-  return all;
+  throw new Error(`comment history exceeds ${MAX_PAGES * 100} comments; refusing to plan from partial history`);
 }
 
 async function main() {
@@ -68,7 +73,11 @@ async function main() {
   await gh("POST", `/repos/${repo}/issues/${number}/comments`, { body: result.body });
 }
 
-main().catch((err) => {
-  console.error(`intake: failed: ${err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`intake: failed: ${err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { listComments };

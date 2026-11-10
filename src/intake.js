@@ -23,19 +23,27 @@ function marker(data) {
 function stateFromComments(comments) {
   const ledger = {};
   const notices = new Set();
+  let broken = false;
   for (const c of comments || []) {
     if (!c || !c.user || c.user.login !== BOT_LOGIN || c.user.type !== "Bot") continue;
-    const m = MARK.exec(String(c.body || ""));
-    if (!m) continue;
-    let data;
-    try { data = JSON.parse(m[1]); } catch { continue; }
-    if (data.kind === "state" && typeof data.key === "string" && data.entry && Array.isArray(data.entry.commentIds)) {
+    const text = String(c.body || "");
+    if (!text.includes("<!-- amone:v1")) continue; // a bot comment that is not ours
+    // From here on this is one of our records. If it cannot be read exactly
+    // (e.g. someone edited it), the history is unknown: never skip it silently.
+    const m = MARK.exec(text);
+    let data = null;
+    if (m) { try { data = JSON.parse(m[1]); } catch { data = null; } }
+    const isEntry = (e) => Boolean(e) && typeof e === "object" && typeof e.state === "string"
+      && Array.isArray(e.commentIds) && e.commentIds.every((x) => typeof x === "string");
+    if (data && data.kind === "state" && typeof data.key === "string" && isEntry(data.entry)) {
       ledger[data.key] = data.entry;
-    } else if (data.kind === "notice") {
+    } else if (data && data.kind === "notice" && typeof data.commentId === "string" && typeof data.reason === "string") {
       notices.add(`${data.commentId}|${data.reason}`);
+    } else {
+      broken = true;
     }
   }
-  return { ledger, notices };
+  return { ledger, notices, broken };
 }
 
 /**
@@ -52,7 +60,8 @@ function plan(input) {
   const parse = (c) => parseRequest(c.body, { repo, thread, commentId: c.id, trusted: isOwner(c) });
 
   const request = parse(comment);
-  const { ledger, notices } = stateFromComments(input.comments);
+  const { ledger, notices, broken } = stateFromComments(input.comments);
+  if (broken) return { action: "halt", reason: "broken bot record", body: null };
   let d = decide(request, registry, ledger);
 
   // Cancel wins even when the cancel comment has not been processed yet: any

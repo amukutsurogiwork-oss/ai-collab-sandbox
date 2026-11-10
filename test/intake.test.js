@@ -83,3 +83,21 @@ test("the author must be the repository owner by ID, not only by association", (
   assert.equal(run(c, [], { ownerId: 1 }).body, null);
   assert.equal(run({ ...c, user: { login: "owner", id: 1, type: "User" } }, [], { ownerId: 1 }).action, "route");
 });
+
+// ---- A bot record that was edited and no longer parses must not be skipped ----
+
+test("a broken bot record stops instead of being silently skipped", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  for (const broken of [
+    routed.replace(/<!-- amone:v1 \{/, "<!-- amone:v1 {{"),                 // JSON broken
+    routed.replace('"kind":"state"', '"kind":"stat"'),                      // unknown kind
+    routed.replace(/"commentIds":\[[^\]]*\]/, '"commentIds":"7"'),         // wrong shape
+  ]) {
+    const r = run(owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design"), [c, bot(broken)]);
+    assert.equal(r.body, null);
+    assert.equal(r.reason, "broken bot record");
+  }
+  // a bot comment without any marker is just ignored
+  assert.equal(run(c, [bot("hello")]).action, "route");
+});

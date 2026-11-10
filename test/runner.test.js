@@ -4,10 +4,10 @@ const assert = require("node:assert");
 const { listComments, run } = require("../scripts/intake");
 const { BOT_LOGIN } = require("../src/intake");
 
-const full = () => Array.from({ length: 100 }, (_, i) => ({ id: i }));
+const full = () => Array.from({ length: 100 }, (_, i) => ({ id: i + 1000, body: "", author_association: "NONE", user: { login: "u", id: 5, type: "User" } }));
 
 test("listComments returns all comments when history fits", async () => {
-  const pages = [full(), [{ id: 1 }]];
+  const pages = [full(), [full()[0]]];
   const got = await listComments(1, async (p) => pages[p - 1]);
   assert.strictEqual(got.length, 101);
 });
@@ -124,4 +124,39 @@ test("an unknown pull request head stops the run", async () => {
   const api = fakeApi([{ comment: c, comments: [c], headSha: null }, { comment: c, comments: [c], headSha: null }]);
   await assert.rejects(go(api, true), /E_HEAD_UNKNOWN/);
   assert.strictEqual(api.posted.length, 0);
+});
+
+// ---- Regression tests for [AMU-REVIEW] round=2 on 2267e1b (fix cycle 3, approved) ----
+
+test("a history page with a malformed comment stops the run", async () => {
+  const good = { id: 1, body: "x", author_association: "NONE", user: { login: "a", id: 2, type: "User" } };
+  for (const bad of [{ id: 3 }, { ...good, body: 5 }, { ...good, user: null }, { ...good, user: { login: "a", type: "User" } }, null]) {
+    await assert.rejects(listComments(1, async () => [good, bad]), /E_HISTORY_MALFORMED/);
+  }
+  assert.strictEqual((await listComments(1, async () => [good])).length, 1);
+});
+
+test("a malformed history element never leads to a second routing notice", async () => {
+  const first = fakeApi([{ comment: ask(), comments: [ask()] }, { comment: ask(), comments: [ask()] }]);
+  await go(first);
+  let snap = -1;
+  const posted = [];
+  const brokenBot = { id: 50, body: first.posted[0] }; // user missing
+  const api = {
+    getComment: async () => { snap += 1; return ask(); },
+    listComments: (n) => listComments(n, async () => [ask(), brokenBot]),
+    getHeadSha: async () => null,
+    postComment: async (n, b) => { posted.push(b); },
+  };
+  await assert.rejects(go(api), /E_HISTORY_MALFORMED/);
+  assert.strictEqual(posted.length, 0);
+});
+
+test("a pull request head that is not a 40-character hex SHA stops the run", async () => {
+  const c = ask("[MONE-REQUEST] id=A1 lane=codex op=pr-review sha=abc1234");
+  for (const bad of ["invalid", "abc1234", 12345, { sha: SHA }, SHA.toUpperCase() + "0"]) {
+    const api = fakeApi([{ comment: c, comments: [c], headSha: bad }, { comment: c, comments: [c], headSha: bad }]);
+    await assert.rejects(go(api, true), /E_HEAD_UNKNOWN/);
+    assert.strictEqual(api.posted.length, 0);
+  }
 });

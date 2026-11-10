@@ -10,6 +10,17 @@ const path = require("node:path");
 const { plan } = require("../src/intake");
 
 const MAX_PAGES = 10;
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** A comment as GitHub returns it. Anything else means the data is unknown. */
+function isValidComment(c) {
+  return Boolean(c) && typeof c === "object"
+    && Number.isSafeInteger(c.id)
+    && typeof c.body === "string"
+    && typeof c.author_association === "string"
+    && Boolean(c.user) && typeof c.user === "object"
+    && typeof c.user.login === "string" && Number.isSafeInteger(c.user.id) && typeof c.user.type === "string";
+}
 
 class IntakeError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -55,6 +66,7 @@ async function listComments(number, fetchPage) {
     // Only a real empty list ends the history. A missing page (404 -> null) or
     // anything that is not a list means the history is unknown: stop.
     if (!Array.isArray(batch)) throw new IntakeError("E_HISTORY_UNAVAILABLE");
+    if (!batch.every(isValidComment)) throw new IntakeError("E_HISTORY_MALFORMED");
     if (batch.length === 0) return all;
     all.push(...batch);
     if (batch.length < 100) return all;
@@ -70,9 +82,12 @@ async function snapshot({ event, repo, registry, api }) {
   if (ownerId == null) throw new IntakeError("E_OWNER_UNKNOWN");
   const comment = await api.getComment(event.comment.id); // latest text, not the queued event's
   if (!comment) return null;
+  if (!isValidComment(comment)) throw new IntakeError("E_COMMENT_MALFORMED");
   const comments = await api.listComments(number);
   const headSha = isPullRequest ? await api.getHeadSha(number) : null;
-  if (isPullRequest && !headSha) throw new IntakeError("E_HEAD_UNKNOWN");
+  if (isPullRequest && !(typeof headSha === "string" && FULL_SHA.test(headSha))) {
+    throw new IntakeError("E_HEAD_UNKNOWN");
+  }
   const result = plan({ repo, thread: number, isPullRequest, headSha, ownerId, comment, comments, registry });
   // What the decision was based on, to compare with the second read.
   const seen = JSON.stringify([

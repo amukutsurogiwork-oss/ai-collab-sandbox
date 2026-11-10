@@ -71,6 +71,10 @@ function validateProject(p) {
   for (const field of ["approvalRequired", "guiOperations"]) {
     if (p[field] !== undefined && !isStrings(p[field])) errors.push(`${field} must be an array of strings`);
   }
+  // Operations are echoed into records, so they must use the safe character set.
+  for (const field of ["allowedOperations", "approvalRequired", "guiOperations"]) {
+    if (isStrings(p[field]) && p[field].some((op) => !SAFE_ID.test(op))) errors.push(`${field} has unsafe characters`);
+  }
   if (isStrings(p.allowedOperations) && isStrings(p.guiOperations)
       && p.guiOperations.some((op) => !p.allowedOperations.includes(op))) {
     errors.push("guiOperations must be listed in allowedOperations");

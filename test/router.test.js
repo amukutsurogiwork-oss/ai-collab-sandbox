@@ -209,3 +209,11 @@ test("unsafe sha or flags are rejected, short and full SHA match", () => {
   assert.equal(sameSha("abc1234", "abc9999def5678"), false);
   assert.equal(sameSha("abc", "abc1234"), false);
 });
+
+test("registry operations and lanes must use the safe character set", () => {
+  const base = { repo: "o/p", allowedLanes: ["chat"], allowedOperations: ["design"] };
+  assert.ok(validateProject({ ...base, allowedOperations: ["de sign"] }).length > 0);
+  assert.ok(validateProject({ ...base, allowedOperations: ["@x"] }).length > 0);
+  assert.ok(validateProject({ ...base, approvalRequired: ["a#b"] }).length > 0);
+  assert.deepEqual(validateProject(base), []);
+});

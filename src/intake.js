@@ -30,19 +30,23 @@ const STOP_TEXT = {
 function renderState(data) {
   const id = String(data.key).split("#")[2];
   const e = data.entry;
+  // Every field of the record is also shown in the visible line, so a record
+  // can never be changed on the inside only.
+  const show = (v) => (v === undefined || v === null || v === "" ? "-" : String(v));
+  const tail = `comments=${e.commentIds.join(",")} sha=${show(e.sha)} flags=${show(e.flags)}`;
   let text;
   if (e.state === "routed") {
     if (!Object.prototype.hasOwnProperty.call(LANE_NOTES, e.lane)) return null;
-    text = `[AMONE-ROUTED] request=${id} lane=${e.lane} op=${e.operation}\n受け付けました。${LANE_NOTES[e.lane]}`;
+    text = `[AMONE-ROUTED] request=${id} lane=${e.lane} op=${e.operation} ${tail}\n受け付けました。${LANE_NOTES[e.lane]}`;
   } else {
-    text = `[AMONE-CANCELLED] request=${id}\n取り消しました。この依頼は実行しません。`;
+    text = `[AMONE-CANCELLED] request=${id} lane=${show(e.lane)} op=${show(e.operation)} ${tail}\n取り消しました。この依頼は実行しません。`;
   }
   return `${text}\n\n${marker(data)}`;
 }
 
 function renderNotice(data) {
   if (!Object.prototype.hasOwnProperty.call(STOP_TEXT, data.stop)) return null;
-  return `[AMONE-STOPPED] reason=${data.reason}\n${STOP_TEXT[data.stop]}\n\n${marker(data)}`;
+  return `[AMONE-STOPPED] reason=${data.reason} comment=${data.commentId}\n${STOP_TEXT[data.stop]}\n\n${marker(data)}`;
 }
 
 const STATES = ["routed", "cancelled"];
@@ -161,4 +165,4 @@ function plan(input) {
   return { action: d.action, reason: d.reason, body: null };
 }
 
-module.exports = { plan, stateFromComments, BOT_LOGIN };
+module.exports = { plan, stateFromComments, renderNotice, BOT_LOGIN };

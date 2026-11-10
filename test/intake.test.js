@@ -183,15 +183,46 @@ test("every stop reason the router can give is read back as a valid notice", () 
   const reasons = [...src.matchAll(/result\("(?:reject|needs-approval)", "([^"]+)"/g)].map((m) => m[1]);
   reasons.push("pull request needs sha", "stale sha");
   assert.ok(reasons.includes("work lane needs a GUI operation"));
-  const { stateFromComments } = require("../src/intake");
+  const { stateFromComments, renderNotice } = require("../src/intake");
   for (const reason of reasons) {
     for (const stop of ["reject", "approval"]) {
-      const data = { kind: "notice", commentId: "7", reason, stop };
-      const text = stop === "approval" ? "よしひろさんの承認が必要な操作なので、止めました。" : "この依頼は受け付けませんでした。";
-      const body = `[AMONE-STOPPED] reason=${reason}\n${text}\n\n<!-- amone:v1 ${JSON.stringify(data)} -->`;
+      const body = renderNotice({ kind: "notice", commentId: "7", reason, stop });
       const st = stateFromComments([bot(body)], "o/p#13#");
       assert.equal(st.broken, false, reason);
       assert.ok(st.notices.has(`7|${reason}`), reason);
     }
   }
+});
+
+// ---- Regression tests for [AMU-REVIEW] round=5 on 061a1c8: no hidden-only fields ----
+
+test("changing a field that only lived inside the record halts", () => {
+  const pr = { isPullRequest: true, headSha: "abc1234def5678abc1234def5678abc1234def56" };
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=codex op=pr-review sha=abc1234 flags=note");
+  const routed = run(c, [], pr).body;
+  assert.ok(routed, "should route");
+  const stop = run(owner(10, "[MONE-REQUEST] id=@x lane=chat op=design")).body;
+  const again = owner(8, "[MONE-REQUEST] id=A1 lane=codex op=pr-review sha=abc1234");
+  const cases = {
+    "commentIds 7 -> 8": routed.replace('"commentIds":["7"]', '"commentIds":["8"]'),
+    "sha changed": routed.replace('"sha":"abc1234"', '"sha":"fff9999"'),
+    "flags changed": routed.replace('"flags":"note"', '"flags":"other"'),
+    "notice commentId changed": stop.replace('"commentId":"10"', '"commentId":"11"'),
+  };
+  for (const [name, broken] of Object.entries(cases)) {
+    assert.notEqual(broken, name === "notice commentId changed" ? stop : routed, name);
+    const r = run(again, [c, bot(broken)], pr);
+    assert.equal(r.reason, "broken bot record", name);
+    assert.equal(r.body, null, name);
+  }
+});
+
+test("the original request edited to another ID after routing is not accepted again", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  const edited = owner(7, "[MONE-REQUEST] id=B1 lane=chat op=design");
+  const r = run(edited, [edited, bot(routed)]);
+  assert.equal(r.action, "reject");
+  assert.equal(r.reason, "comment already bound to another request");
+  assert.doesNotMatch(r.body, /AMONE-ROUTED/);
 });

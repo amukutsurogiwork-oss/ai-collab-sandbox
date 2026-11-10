@@ -65,3 +65,21 @@ test("the real registry file is valid", () => {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "collab", "registry.json"), "utf8"));
   for (const p of real.projects) assert.deepEqual(validateProject(p), []);
 });
+
+// ---- Regression tests for [AMU-REVIEW] on 4151501 ----
+
+test("a cancel comment by the owner blocks routing even before it was processed", () => {
+  const ask = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const cancel = owner(8, "[MONE-REQUEST] id=A1 status=cancel");
+  const r = run(ask, [ask, cancel]);
+  assert.equal(r.body, null);
+  assert.equal(r.reason, "cancel comment present");
+  const fake = { id: 9, body: "[MONE-REQUEST] id=A1 status=cancel", author_association: "NONE", user: { login: "x", id: 99, type: "User" } };
+  assert.equal(run(ask, [ask, fake]).action, "route");
+});
+
+test("the author must be the repository owner by ID, not only by association", () => {
+  const c = { id: 7, body: "[MONE-REQUEST] id=A1 lane=chat op=design", author_association: "OWNER", user: { login: "other", id: 2, type: "User" } };
+  assert.equal(run(c, [], { ownerId: 1 }).body, null);
+  assert.equal(run({ ...c, user: { login: "owner", id: 1, type: "User" } }, [], { ownerId: 1 }).action, "route");
+});

@@ -46,11 +46,26 @@ function stateFromComments(comments) {
  */
 function plan(input) {
   const { repo, thread, comment, registry } = input;
-  const request = parseRequest(comment.body, {
-    repo, thread, commentId: comment.id, trusted: comment.author_association === "OWNER",
-  });
+  // Owner = GitHub says OWNER and, when the caller knows it, the same account ID.
+  const isOwner = (c) => Boolean(c) && c.author_association === "OWNER"
+    && (input.ownerId == null || Boolean(c.user && c.user.id === input.ownerId));
+  const parse = (c) => parseRequest(c.body, { repo, thread, commentId: c.id, trusted: isOwner(c) });
+
+  const request = parse(comment);
   const { ledger, notices } = stateFromComments(input.comments);
   let d = decide(request, registry, ledger);
+
+  // Cancel wins even when the cancel comment has not been processed yet: any
+  // owner comment in the thread that cancels this request blocks routing.
+  if (d.action === "route") {
+    const key = requestKey(request);
+    const cancelled = (input.comments || []).some((c) => {
+      if (!c || String(c.id) === String(comment.id)) return false;
+      const other = parse(c);
+      return Boolean(other) && other.trusted && other.status === "cancel" && requestKey(other) === key;
+    });
+    if (cancelled) return { action: "skip-cancelled", reason: "cancel comment present", body: null };
+  }
 
   if (d.action === "route" && input.isPullRequest) {
     if (!request.sha) d = { action: "reject", reason: "pull request needs sha" };

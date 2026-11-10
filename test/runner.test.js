@@ -1,7 +1,8 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert");
-const { listComments } = require("../scripts/intake");
+const { listComments, run } = require("../scripts/intake");
+const { BOT_LOGIN } = require("../src/intake");
 
 const full = () => Array.from({ length: 100 }, (_, i) => ({ id: i }));
 
@@ -12,10 +13,78 @@ test("listComments returns all comments when history fits", async () => {
 });
 
 test("listComments refuses to return truncated history (more than 1000 comments)", async () => {
-  await assert.rejects(listComments(1, async () => full()), /partial history/);
+  await assert.rejects(listComments(1, async () => full()), /E_HISTORY_TOO_LONG/);
 });
 
-test("listComments accepts exactly 1000 comments when page 11 is empty-bounded", async () => {
-  // 10 full pages is indistinguishable from truncation without page 11, so it must refuse.
-  await assert.rejects(listComments(1, async (p) => (p <= 10 ? full() : [])), /partial history/);
+test("listComments refuses exactly 1000 comments (cannot tell it from truncation)", async () => {
+  await assert.rejects(listComments(1, async (p) => (p <= 10 ? full() : [])), /E_HISTORY_TOO_LONG/);
+});
+
+// ---- Regression tests for [AMU-REVIEW] on 4151501: re-check everything right before posting ----
+
+const registry = { projects: [{ repo: "o/p", allowedLanes: ["chat", "codex"], allowedOperations: ["design", "pr-review"] }] };
+const ownerUser = { login: "owner", id: 1, type: "User" };
+const ask = (body = "[MONE-REQUEST] id=A1 lane=chat op=design") => ({ id: 7, body, author_association: "OWNER", user: ownerUser });
+const SHA = "abc1234def5678abc1234def5678abc1234def56";
+
+// A fake GitHub whose state can change between the first read and the re-check.
+function fakeApi(steps) {
+  let snap = -1; // each snapshot starts with getComment
+  const posted = [];
+  const now = () => steps[Math.min(Math.max(snap, 0), steps.length - 1)];
+  return {
+    posted,
+    getComment: async () => { snap += 1; return now().comment; },
+    listComments: async () => now().comments,
+    getHeadSha: async () => now().headSha || null,
+    postComment: async (n, body) => { posted.push(body); if (steps.failPost) throw new Error("boom"); },
+  };
+}
+const event = (pr = false) => ({ issue: { number: 13, ...(pr ? { pull_request: {} } : {}) }, comment: { id: 7 }, repository: { owner: { id: 1 } } });
+const go = (api, pr = false) => run({ event: event(pr), repo: "o/p", registry, api });
+
+test("unchanged state posts exactly one comment", async () => {
+  const s = { comment: ask(), comments: [ask()] };
+  const api = fakeApi([s, s]);
+  await go(api);
+  assert.strictEqual(api.posted.length, 1);
+  assert.match(api.posted[0], /^\[AMONE-ROUTED\] request=A1/);
+});
+
+test("a cancel comment that arrives after planning stops the post", async () => {
+  const cancel = { id: 8, body: "[MONE-REQUEST] id=A1 status=cancel", author_association: "OWNER", user: ownerUser };
+  const api = fakeApi([{ comment: ask(), comments: [ask()] }, { comment: ask(), comments: [ask(), cancel] }]);
+  await go(api);
+  assert.strictEqual(api.posted.length, 0);
+});
+
+test("a result that another run posted after planning stops the post", async () => {
+  const first = fakeApi([{ comment: ask(), comments: [ask()] }, { comment: ask(), comments: [ask()] }]);
+  await go(first);
+  const botComment = { id: 50, body: first.posted[0], user: { login: BOT_LOGIN, type: "Bot" } };
+  const api = fakeApi([{ comment: ask(), comments: [ask()] }, { comment: ask(), comments: [ask(), botComment] }]);
+  await go(api);
+  assert.strictEqual(api.posted.length, 0);
+});
+
+test("a push to the pull request after planning stops the post", async () => {
+  const c = ask("[MONE-REQUEST] id=A1 lane=codex op=pr-review sha=abc1234");
+  const api = fakeApi([{ comment: c, comments: [c], headSha: SHA }, { comment: c, comments: [c], headSha: "fff9999" + SHA.slice(7) }]);
+  await go(api, true);
+  assert.strictEqual(api.posted.length, 0);
+});
+
+test("an edited or re-authored request after planning stops the post", async () => {
+  const edited = ask("[MONE-REQUEST] id=A1 lane=codex op=pr-review");
+  const api = fakeApi([{ comment: ask(), comments: [ask()] }, { comment: edited, comments: [edited] }]);
+  await go(api);
+  assert.strictEqual(api.posted.length, 0);
+});
+
+test("a failed post is not retried", async () => {
+  const s = { comment: ask(), comments: [ask()] };
+  const steps = [s, s]; steps.failPost = true;
+  const api = fakeApi(steps);
+  await assert.rejects(go(api));
+  assert.strictEqual(api.posted.length, 1);
 });

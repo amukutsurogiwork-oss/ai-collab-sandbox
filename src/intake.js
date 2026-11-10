@@ -16,21 +16,56 @@ function marker(data) {
   return `<!-- amone:v1 ${JSON.stringify(data)} -->`;
 }
 
+const STOP_TEXT = {
+  approval: "よしひろさんの承認が必要な操作なので、止めました。",
+  reject: "この依頼は受け付けませんでした。",
+};
+
+/**
+ * The one and only way a record comment is written. The reader rebuilds the
+ * comment from its hidden data with these same functions and requires an
+ * exact match, so visible text and hidden data can never disagree.
+ * Returns null when the data cannot be rendered.
+ */
+function renderState(data) {
+  const id = String(data.key).split("#")[2];
+  const e = data.entry;
+  let text;
+  if (e.state === "routed") {
+    if (!Object.prototype.hasOwnProperty.call(LANE_NOTES, e.lane)) return null;
+    text = `[AMONE-ROUTED] request=${id} lane=${e.lane} op=${e.operation}\n受け付けました。${LANE_NOTES[e.lane]}`;
+  } else {
+    text = `[AMONE-CANCELLED] request=${id}\n取り消しました。この依頼は実行しません。`;
+  }
+  return `${text}\n\n${marker(data)}`;
+}
+
+function renderNotice(data) {
+  if (!Object.prototype.hasOwnProperty.call(STOP_TEXT, data.stop)) return null;
+  return `[AMONE-STOPPED] reason=${data.reason}\n${STOP_TEXT[data.stop]}\n\n${marker(data)}`;
+}
+
 const STATES = ["routed", "cancelled"];
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 const NUM = /^[1-9][0-9]*$/;
 const HEX = /^[0-9a-f]{7,40}$/;
 
 /** Exactly the ledger entry shapes that decide() writes. Anything else is broken. */
+const ENTRY_KEYS = ["state", "commentIds", "lane", "operation", "sha", "flags"];
+const FLAGS = (v) => typeof v === "string"
+  && (v === "" || (v.split(",").every((f) => SAFE_ID.test(f)) && v === [...new Set(v.split(","))].sort().join(",")));
+const onlyKeys = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
+
 function isValidEntry(e) {
-  if (!e || typeof e !== "object" || !STATES.includes(e.state)) return false;
+  if (!e || typeof e !== "object" || Array.isArray(e) || !STATES.includes(e.state)) return false;
+  if (!onlyKeys(e, ENTRY_KEYS)) return false;
   if (!Array.isArray(e.commentIds) || e.commentIds.length === 0) return false;
   if (!e.commentIds.every((x) => typeof x === "string" && NUM.test(x))) return false;
   const optional = (v, ok) => v === undefined || ok(v);
   const fieldsOk = optional(e.lane, (v) => typeof v === "string" && SAFE_ID.test(v))
     && optional(e.operation, (v) => typeof v === "string" && SAFE_ID.test(v))
     && optional(e.sha, (v) => v === null || (typeof v === "string" && HEX.test(v)))
-    && optional(e.flags, (v) => typeof v === "string");
+    && optional(e.flags, FLAGS);
   if (!fieldsOk) return false;
   // A routed entry always carries what it was routed for.
   return e.state !== "routed" || (typeof e.lane === "string" && typeof e.operation === "string");
@@ -49,7 +84,7 @@ function stateFromComments(comments, prefix) {
   let broken = false;
   for (const c of comments || []) {
     if (!c || !c.user || c.user.login !== BOT_LOGIN || c.user.type !== "Bot") continue;
-    const text = String(c.body || "");
+    const text = String(c.body || "").replace(/\r\n/g, "\n");
     const markers = text.split("<!-- amone:v1").length - 1;
     if (markers === 0 && !text.trimStart().startsWith("[AMONE-")) continue; // not ours
     if (markers !== 1) { broken = true; continue; }
@@ -57,10 +92,14 @@ function stateFromComments(comments, prefix) {
     let data = null;
     if (m) { try { data = JSON.parse(m[1]); } catch { data = null; } }
     const keyOk = (k) => typeof k === "string" && k.startsWith(prefix) && SAFE_ID.test(k.slice(prefix.length));
-    if (data && data.kind === "state" && keyOk(data.key) && isValidEntry(data.entry)) {
+    const isObj = data && typeof data === "object" && !Array.isArray(data);
+    if (isObj && data.kind === "state" && onlyKeys(data, ["kind", "key", "entry"])
+        && keyOk(data.key) && isValidEntry(data.entry) && renderState(data) === text) {
       ledger[data.key] = data.entry;
-    } else if (data && data.kind === "notice" && typeof data.commentId === "string" && NUM.test(data.commentId)
-        && typeof data.reason === "string" && data.reason.length > 0) {
+    } else if (isObj && data.kind === "notice" && onlyKeys(data, ["kind", "commentId", "reason", "stop"])
+        && typeof data.commentId === "string" && NUM.test(data.commentId)
+        && typeof data.reason === "string" && /^[A-Za-z][A-Za-z ]{0,58}[A-Za-z]$/.test(data.reason)
+        && renderNotice(data) === text) {
       notices.add(`${data.commentId}|${data.reason}`);
     } else {
       broken = true;
@@ -106,21 +145,17 @@ function plan(input) {
 
   if (d.action === "route" || d.action === "cancel") {
     const key = requestKey(request);
-    const state = marker({ kind: "state", key, entry: d.ledger[key] });
-    const text = d.action === "route"
-      ? `[AMONE-ROUTED] request=${request.id} lane=${d.lane} op=${request.operation}\n受け付けました。${LANE_NOTES[d.lane]}`
-      : `[AMONE-CANCELLED] request=${request.id}\n取り消しました。この依頼は実行しません。`;
-    return { action: d.action, reason: d.reason, body: `${text}\n\n${state}` };
+    const body = renderState({ kind: "state", key, entry: d.ledger[key] });
+    if (!body) return { action: "halt", reason: "cannot render record", body: null };
+    return { action: d.action, reason: d.reason, body };
   }
 
   if (d.action === "reject" || d.action === "needs-approval") {
     const commentId = String(comment.id);
     if (notices.has(`${commentId}|${d.reason}`)) return { action: d.action, reason: d.reason, body: null };
-    const text = d.action === "needs-approval"
-      ? "よしひろさんの承認が必要な操作なので、止めました。"
-      : "この依頼は受け付けませんでした。";
-    const note = marker({ kind: "notice", commentId, reason: d.reason });
-    return { action: d.action, reason: d.reason, body: `[AMONE-STOPPED] reason=${d.reason}\n${text}\n\n${note}` };
+    const stop = d.action === "needs-approval" ? "approval" : "reject";
+    const body = renderNotice({ kind: "notice", commentId, reason: d.reason, stop });
+    return { action: d.action, reason: d.reason, body };
   }
 
   return { action: d.action, reason: d.reason, body: null };

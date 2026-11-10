@@ -132,3 +132,66 @@ test("a valid record still blocks a second acceptance, and unrelated bot comment
   assert.equal(run(owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design"), [c, bot(routed)]).action, "skip-duplicate");
   assert.equal(run(c, [bot("unit tests passed")]).action, "route");
 });
+
+// ---- Regression tests for [AMU-REVIEW] round=4 on 79db813: visible text and record must agree ----
+
+test("a record whose hidden data disagrees with its visible text halts", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  const cancelBody = run(owner(9, "[MONE-REQUEST] id=C1 status=cancel")).body;
+  const stopBody = run(owner(10, "[MONE-REQUEST] id=@x lane=chat op=design")).body;
+  const again = owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const cases = {
+    "key A1 -> B1 only in the record": routed.replace('"o/p#13#A1"', '"o/p#13#B1"'),
+    "ROUTED text with a notice record": routed.replace(/<!-- amone:v1 .* -->/, '<!-- amone:v1 {"kind":"notice","commentId":"7","reason":"x"} -->'),
+    "visible lane changed": routed.replace("lane=chat op=design", "lane=codex op=design"),
+    "visible text edited below the first line": routed.replace("受け付けました。", "受け付けた。"),
+    "CANCELLED text with a routed record": cancelBody.replace('"state":"cancelled"', '"state":"routed","lane":"chat","operation":"design"'),
+    "STOPPED reason changed in the text": stopBody.replace("reason=invalid id", "reason=other"),
+    "extra field in the record": routed.replace('"state":"routed"', '"state":"routed","extra":1'),
+    "flags not in normalized form": routed.replace('"flags":""', '"flags":"b,a"'),
+  };
+  for (const [name, broken] of Object.entries(cases)) {
+    assert.notEqual(broken, routed, name);
+    const r = run(again, [c, bot(broken)]);
+    assert.equal(r.reason, "broken bot record", name);
+    assert.equal(r.body, null, name);
+  }
+});
+
+test("every comment the intake writes is read back as a valid record", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  const edit = owner(7, "[MONE-REQUEST] id=A1 status=cancel");
+  const cancelled = run(edit, [edit, bot(routed)]).body;
+  const freshCancel = run(owner(9, "[MONE-REQUEST] id=C1 status=cancel")).body;
+  const stopped = run(owner(10, "[MONE-REQUEST] id=@x lane=chat op=design")).body;
+  const approval = run(owner(11, "[MONE-REQUEST] id=D1 lane=chat op=deploy")).body;
+  const flagged = run(owner(12, "[MONE-REQUEST] id=F1 lane=chat op=design flags=note,alpha")).body;
+  for (const body of [routed, cancelled, freshCancel, stopped, approval, flagged]) {
+    assert.ok(body, "the intake should have written something");
+    const r = run(owner(20, "[MONE-REQUEST] id=Z9 lane=chat op=design"), [bot(body)]);
+    assert.notEqual(r.reason, "broken bot record", body.split("\n")[0]);
+  }
+  // Windows line endings returned by an API must not count as tampering.
+  const r = run(owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design"), [c, bot(routed.replace(/\n/g, "\r\n"))]);
+  assert.equal(r.action, "skip-duplicate");
+});
+
+test("every stop reason the router can give is read back as a valid notice", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "router.js"), "utf8");
+  const reasons = [...src.matchAll(/result\("(?:reject|needs-approval)", "([^"]+)"/g)].map((m) => m[1]);
+  reasons.push("pull request needs sha", "stale sha");
+  assert.ok(reasons.includes("work lane needs a GUI operation"));
+  const { stateFromComments } = require("../src/intake");
+  for (const reason of reasons) {
+    for (const stop of ["reject", "approval"]) {
+      const data = { kind: "notice", commentId: "7", reason, stop };
+      const text = stop === "approval" ? "よしひろさんの承認が必要な操作なので、止めました。" : "この依頼は受け付けませんでした。";
+      const body = `[AMONE-STOPPED] reason=${reason}\n${text}\n\n<!-- amone:v1 ${JSON.stringify(data)} -->`;
+      const st = stateFromComments([bot(body)], "o/p#13#");
+      assert.equal(st.broken, false, reason);
+      assert.ok(st.notices.has(`7|${reason}`), reason);
+    }
+  }
+});

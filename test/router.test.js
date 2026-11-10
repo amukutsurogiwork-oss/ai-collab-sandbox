@@ -91,3 +91,51 @@ test("invalid registry entries are reported", () => {
   assert.ok(validateProject({ repo: "bad", allowedLanes: ["x"] }).length >= 2);
   assert.deepEqual(validateProject(registry.projects[0]), []);
 });
+
+// ---- Regression tests for review findings on bad0e75 ----
+
+test("editing the routed comment to status=cancel still cancels", () => {
+  const routed = decide(req("[MONE-REQUEST] id=E1 lane=chat op=design", 7), registry);
+  const edited = decide(req("[MONE-REQUEST] id=E1 status=cancel", 7), registry, routed.ledger);
+  assert.equal(edited.action, "cancel");
+  assert.equal(edited.ledger["o/p#13#E1"].state, "cancelled");
+  const again = decide(req("[MONE-REQUEST] id=E1 status=cancel", 7), registry, edited.ledger);
+  assert.equal(again.action, "skip-cancelled");
+});
+
+test("sensitive operations stop even if the registry forgot approvalRequired", () => {
+  const reg = { projects: [{ repo: "o/p", allowedLanes: ["chat"], allowedOperations: ["production", "deploy", "secrets"] }] };
+  for (const op of ["production", "deploy", "secrets"]) {
+    assert.equal(decide(req(`[MONE-REQUEST] id=X-${op} lane=chat op=${op}`), reg).action, "needs-approval", op);
+  }
+});
+
+test("work lane needs an operation registered as GUI work", () => {
+  const reg = { projects: [{ repo: "o/p", allowedLanes: ["work"], allowedOperations: ["design", "screen-check"], guiOperations: ["screen-check"] }] };
+  assert.equal(decide(req("[MONE-REQUEST] id=W2 lane=work op=design"), reg).reason, "work lane needs a GUI operation");
+  assert.equal(decide(req("[MONE-REQUEST] id=W3 lane=work op=screen-check"), reg).action, "route");
+});
+
+test("guard only passes the exact routed request", () => {
+  const routed = decide(req("[MONE-REQUEST] id=G2 lane=chat op=design sha=aaa", 1), registry);
+  const swapped = req("[MONE-REQUEST] id=G2 lane=chat op=deploy sha=aaa", 1);
+  assert.equal(guardSideEffect(swapped, { ledger: routed.ledger, headSha: "aaa" }).reason, "request changed");
+  const otherSha = req("[MONE-REQUEST] id=G2 lane=chat op=design sha=bbb", 1);
+  assert.equal(guardSideEffect(otherSha, { ledger: routed.ledger, headSha: "bbb" }).reason, "request changed");
+  const fakeState = { "o/p#13#G2": { ...routed.ledger["o/p#13#G2"], state: "needs-approval" } };
+  const r = req("[MONE-REQUEST] id=G2 lane=chat op=design sha=aaa", 1);
+  assert.equal(guardSideEffect(r, { ledger: fakeState, headSha: "aaa" }).reason, "not routed");
+});
+
+test("guard requires a SHA for pull request side effects", () => {
+  const routed = decide(req("[MONE-REQUEST] id=G3 lane=codex op=pr-review", 1), registry);
+  const r = req("[MONE-REQUEST] id=G3 lane=codex op=pr-review", 1);
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).reason, "pull request needs sha");
+});
+
+test("missing thread or unsafe IDs are rejected", () => {
+  const noThread = parseRequest("[MONE-REQUEST] id=K1 lane=chat op=design", { repo: "o/p", commentId: 1 });
+  assert.equal(decide(noThread, registry).reason, "invalid thread");
+  assert.equal(decide(req("[MONE-REQUEST] id=K1 lane=chat op=design", 1, { thread: "13#x" }), registry).reason, "invalid thread");
+  assert.equal(decide(req("[MONE-REQUEST] id=K#1 lane=chat op=design"), registry).reason, "invalid id");
+});

@@ -2,8 +2,11 @@
 
 const LANES = ["chat", "work", "codex", "mone"];
 const STATUSES = ["open", "cancel"];
-// Always stop for the owner, whatever the registry says.
-const ALWAYS_APPROVAL = ["paid", "production", "secrets", "permissions"];
+// Always stop for the owner, whatever the registry says. Checked against both
+// the operation itself and the requester's flags (fail closed).
+const ALWAYS_APPROVAL = ["paid", "production", "deploy", "secrets", "permissions", "delete", "publish"];
+const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+const SAFE_THREAD = /^[1-9][0-9]*$/;
 
 /**
  * Parse a "[MONE-REQUEST] id=<ID> lane=<lane> op=<op> status=open|cancel sha=<SHA>" comment.
@@ -67,27 +70,30 @@ function decide(request, registry, ledger = {}) {
   if (!project) return result("reject", "project not registered");
   if (validateProject(project).length) return result("reject", "registry entry invalid");
   if (!STATUSES.includes(request.status)) return result("reject", "unknown status");
+  if (!SAFE_THREAD.test(request.thread)) return result("reject", "invalid thread");
+  if (!SAFE_ID.test(request.id)) return result("reject", "invalid id");
 
   const key = requestKey(request);
   const entry = ledger[key];
-  if (entry && request.commentId && entry.commentIds.includes(request.commentId)) {
-    return result("skip-duplicate", "comment already processed");
-  }
-
-  const record = (state) => ({
+  const record = (state, extra = {}) => ({
     ...ledger,
     [key]: {
+      ...(entry || {}),
+      ...extra,
       state,
-      sha: request.sha || (entry && entry.sha) || null,
-      commentIds: [...((entry && entry.commentIds) || []), request.commentId].filter(Boolean),
+      commentIds: [...new Set([...((entry && entry.commentIds) || []), request.commentId].filter(Boolean))],
     },
   });
 
-  // Cancel wins over everything else, even after the request was routed.
+  // Cancel wins over everything else, even an edit of an already routed comment.
   if (request.status === "cancel") {
+    if (entry && entry.state === "cancelled") return result("skip-cancelled", "already cancelled");
     return result("cancel", "cancelled by requester", { ledger: record("cancelled") });
   }
   if (entry && entry.state === "cancelled") return result("skip-cancelled", "request was cancelled");
+  if (entry && request.commentId && entry.commentIds.includes(request.commentId)) {
+    return result("skip-duplicate", "comment already processed");
+  }
   if (entry && entry.state === "routed") return result("skip-duplicate", "request already routed");
 
   if (!LANES.includes(request.lane)) return result("reject", "unknown lane");
@@ -96,12 +102,19 @@ function decide(request, registry, ledger = {}) {
   if (!project.allowedOperations.includes(request.operation)) {
     return result("reject", "operation not allowed for project");
   }
+  if (request.lane === "work" && !(project.guiOperations || []).includes(request.operation)) {
+    return result("reject", "work lane needs a GUI operation");
+  }
   const needsApproval =
+    ALWAYS_APPROVAL.includes(request.operation) ||
     (project.approvalRequired || []).includes(request.operation) ||
     request.flags.some((f) => ALWAYS_APPROVAL.includes(f));
   if (needsApproval) return result("needs-approval", "stop and ask the owner", { lane: "mone" });
 
-  return result("route", "ok", { lane: request.lane, ledger: record("routed") });
+  return result("route", "ok", {
+    lane: request.lane,
+    ledger: record("routed", { lane: request.lane, operation: request.operation, sha: request.sha }),
+  });
 }
 
 /**
@@ -112,10 +125,16 @@ function decide(request, registry, ledger = {}) {
 function guardSideEffect(request, latest = {}) {
   const stop = (reason) => ({ ok: false, reason });
   const entry = (latest.ledger || {})[requestKey(request)];
-  if (!entry || entry.state === "cancelled") return stop(entry ? "cancelled" : "not routed");
+  if (entry && entry.state === "cancelled") return stop("cancelled");
+  if (!entry || entry.state !== "routed") return stop("not routed");
+  // Only the exact request that was routed may act.
+  if (entry.lane !== request.lane || entry.operation !== request.operation || (entry.sha || null) !== (request.sha || null)) {
+    return stop("request changed");
+  }
   if (latest.alreadyPosted) return stop("result already posted");
-  if (entry.sha && latest.headSha && entry.sha !== latest.headSha) return stop("stale sha");
+  if (latest.isPullRequest && !entry.sha) return stop("pull request needs sha");
   if (entry.sha && !latest.headSha) return stop("head sha unknown");
+  if (entry.sha && entry.sha !== latest.headSha) return stop("stale sha");
   return { ok: true, reason: "ok" };
 }
 

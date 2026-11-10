@@ -10,18 +10,20 @@ COLLAB-005 の最初のPR。COLLAB-006 (v1.3, 11/9の相談) のうち、このP
 - Chatを GitHub の出来事から人手なしで起こす方法は **未実証** (`UNSUPPORTED` のまま)。
 
 ## 構成
-- **登録台帳** `collab/registry.example.json`: repo、窓口、許可レーン、許可操作、承認が要る操作 (`approvalRequired`)、通知先、優先度。新しいプロジェクトは1件足すだけ。
+- **登録台帳** `collab/registry.example.json`: repo、窓口、許可レーン、許可操作、承認が要る操作 (`approvalRequired`)、画面操作が必須の操作 (`guiOperations`)、通知先、優先度。新しいプロジェクトは1件足すだけ。
 - **ルーター** `src/router.js` (純粋関数、GitHubには触らない)
-  - `parseRequest`: `[MONE-REQUEST] id=<ID> lane=<chat|work|codex|mone> op=<操作> status=open|cancel sha=<SHA>` を読む。既存の書式を使い、新しいID体系は作らない。
+  - `parseRequest`: `[MONE-REQUEST] id=<ID> lane=<chat|work|codex|mone> op=<操作> status=open|cancel sha=<SHA>` を読む。既存の書式 `[MONE-ASK]` / `[AMU-ANSWER]` / `[MONE-REQUEST]` / `[AMU-RESULT]` を維持し、新しいID体系は作らない。
   - `decide`: `route / reject / cancel / skip-duplicate / skip-cancelled / needs-approval` を返す。
-  - `guardSideEffect`: コメント投稿・書き込み・反映の **直前** に、取消・投稿済み・SHAのずれをもう一度確かめる。
-- **状態**: 依頼の鍵は `repo#Issue/PR番号#依頼ID`。別repoや別Issueの同じIDとはぶつからない。正本はGitHub。
+  - `guardSideEffect`: コメント投稿・書き込み・反映の **直前** に、振り分け済みか・取消・投稿済み・中身の差し替え (lane/op/SHA)・SHAのずれ・PRなのにSHAがない、を確かめて止める。
+- **状態**: 依頼の鍵は `repo#Issue/PR番号#依頼ID`。Issue/PR番号は正の整数、依頼IDは英数字と `. _ -` だけ (区切りの `#` が混ざらない)。正本はGitHub。
 
-## 守ること
-- 取消が最優先。振り分け済みの依頼でも取消できる。取消済みの依頼は動かさない。
-- 同じコメントID・同じ依頼は二度動かさない。
-- 知らない `status` や、`op` のない依頼は拒否する (安全側)。
-- 承認が要るかは **登録台帳と操作の中身** で決める。コメントに「承認済み」と書いてあっても承認とみなさない。課金・本番・Secrets・権限は必ず止めて聞く。
+## 守ること (このPRのルーター関数の中での約束)
+- 取消が最優先。振り分け済みの依頼や、元のコメントを編集しての取消も効く。取消済みの依頼は動かさない。
+- 同じコメントID・同じ依頼は、渡された台帳の上では二度振り分けない。
+- 知らない `status`、`op` のない依頼、不正な番号やIDは拒否する (安全側)。
+- 承認が要るかは **登録台帳と操作の中身** で決める。コメントに「承認済み」と書いてあっても承認とみなさない。課金・本番・反映・Secrets・権限・削除・公開は、台帳の書き漏れがあっても必ず止めて聞く。
+- Workレーンは、台帳の `guiOperations` に書いた操作だけ。
+- 止めたChatGPTのGitHub連携の予定タスクは、アカウント解除の後も、よしひろさんがはっきり指示するまで再開しない。
 - 公開されるログに、秘密・非公開のURL/ID・個人情報・環境変数・APIの応答を出さない。
 
 ## 当面の頻度 (アカウント停止からの復旧後、暫定)
@@ -39,6 +41,12 @@ COLLAB-005 の最初のPR。COLLAB-006 (v1.3, 11/9の相談) のうち、このP
 | GitHubの出来事でChatを即時起動 | **未実現・未実証** |
 
 単体テストが通ることと、GitHub上で実際に連携できることは別。後者はまだ試していない。
+
+### このPRでは保証できないこと
+- **同時実行**: 同じ古い台帳を読んだ2つの実行は、どちらも `route` になりうる。防ぐのは次の段階の Actions `concurrency` の役目。
+- **投稿の一回きり**: `alreadyPosted` は呼び出し側が直前に調べた値で、投稿そのものを一回きりにする仕組みではない。
+- **保存の競合と中断からの復旧**: 未実装。
+これらは別PRの実機試験の合格条件にする。
 
 ## 決まっていないこと (このPRでは決めない)
 1. 自動Mergeを続けるか、よしひろのMerge 1タップに揃えるか。決まるまで自動Mergeは標準にしない。

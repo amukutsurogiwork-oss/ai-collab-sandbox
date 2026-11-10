@@ -3,11 +3,23 @@
     {
       "repo": "example-owner/example-project",
       "contact": "mone",
-      "allowedLanes": ["chat", "codex", "mone"],
-      "allowedOperations": ["design", "research", "pr-review", "deploy"],
-      "approvalRequired": ["deploy"],
+      "allowedLanes": [
+        "chat",
+        "codex",
+        "mone"
+      ],
+      "allowedOperations": [
+        "design",
+        "research",
+        "pr-review",
+        "deploy"
+      ],
+      "approvalRequired": [
+        "deploy"
+      ],
       "notify": "github-issue",
-      "priority": "normal"
+      "priority": "normal",
+      "guiOperations": []
     }
   ]
 }

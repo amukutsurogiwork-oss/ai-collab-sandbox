@@ -88,3 +88,40 @@ test("a failed post is not retried", async () => {
   await assert.rejects(go(api));
   assert.strictEqual(api.posted.length, 1);
 });
+
+// ---- Regression tests for [AMU-REVIEW] round=1 on 0ee352a ----
+
+test("listComments stops when a history page is missing (404 -> null) or malformed", async () => {
+  await assert.rejects(listComments(1, async (p) => (p === 1 ? full() : null)), /E_HISTORY_UNAVAILABLE/);
+  await assert.rejects(listComments(1, async () => null), /E_HISTORY_UNAVAILABLE/);
+  await assert.rejects(listComments(1, async () => ({ message: "x" })), /E_HISTORY_UNAVAILABLE/);
+  assert.deepStrictEqual(await listComments(1, async () => []), []);
+});
+
+test("a missing second history page posts nothing", async () => {
+  let snap = -1;
+  const posted = [];
+  const api = {
+    getComment: async () => { snap += 1; return ask(); },
+    listComments: (n) => listComments(n, async (p) => (p === 1 ? [ask(), ...full().slice(1)] : null)),
+    getHeadSha: async () => null,
+    postComment: async (n, b) => { posted.push(b); },
+  };
+  await assert.rejects(go(api), /E_HISTORY_UNAVAILABLE/);
+  assert.strictEqual(posted.length, 0);
+});
+
+test("an edit below the first line between the two reads stops the post", async () => {
+  const before = { ...ask("[MONE-REQUEST] id=A1 lane=chat op=design\nold"), updated_at: "t1" };
+  const after = { ...ask("[MONE-REQUEST] id=A1 lane=chat op=design\nnew"), updated_at: "t2" };
+  const api = fakeApi([{ comment: before, comments: [before] }, { comment: after, comments: [after] }]);
+  await go(api);
+  assert.strictEqual(api.posted.length, 0);
+});
+
+test("an unknown pull request head stops the run", async () => {
+  const c = ask("[MONE-REQUEST] id=A1 lane=codex op=pr-review sha=abc1234");
+  const api = fakeApi([{ comment: c, comments: [c], headSha: null }, { comment: c, comments: [c], headSha: null }]);
+  await assert.rejects(go(api, true), /E_HEAD_UNKNOWN/);
+  assert.strictEqual(api.posted.length, 0);
+});

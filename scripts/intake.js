@@ -52,7 +52,10 @@ async function listComments(number, fetchPage) {
   const all = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const batch = await fetchPage(page);
-    if (!batch || batch.length === 0) return all;
+    // Only a real empty list ends the history. A missing page (404 -> null) or
+    // anything that is not a list means the history is unknown: stop.
+    if (!Array.isArray(batch)) throw new IntakeError("E_HISTORY_UNAVAILABLE");
+    if (batch.length === 0) return all;
     all.push(...batch);
     if (batch.length < 100) return all;
   }
@@ -69,7 +72,14 @@ async function snapshot({ event, repo, registry, api }) {
   if (!comment) return null;
   const comments = await api.listComments(number);
   const headSha = isPullRequest ? await api.getHeadSha(number) : null;
-  return plan({ repo, thread: number, isPullRequest, headSha, ownerId, comment, comments, registry });
+  if (isPullRequest && !headSha) throw new IntakeError("E_HEAD_UNKNOWN");
+  const result = plan({ repo, thread: number, isPullRequest, headSha, ownerId, comment, comments, registry });
+  // What the decision was based on, to compare with the second read.
+  const seen = JSON.stringify([
+    comment.id, comment.body, comment.updated_at, comment.author_association,
+    comment.user ? comment.user.id : null, headSha,
+  ]);
+  return { ...result, seen };
 }
 
 async function run(ctx, log = () => {}) {
@@ -82,7 +92,7 @@ async function run(ctx, log = () => {}) {
   // author, every other comment incl. cancels and results already posted, and
   // the PR head) and plan again. Post only if nothing changed the outcome.
   const again = await snapshot(ctx);
-  if (!again || again.body !== first.body) {
+  if (!again || again.body !== first.body || again.seen !== first.seen) {
     return log("intake: state changed while processing; stopping without posting");
   }
   await ctx.api.postComment(ctx.event.issue.number, first.body);

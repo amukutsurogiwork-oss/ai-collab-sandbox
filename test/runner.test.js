@@ -235,33 +235,33 @@ test("[AMU-RESULT] removes the label only for an open, routed Work request of th
   }
 });
 
-test("if posting fails after the label was added, the label is taken off again", async () => {
+test("if posting fails after the label was added, the label stays (never removed on failure)", async () => {
   const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
   const steps = [s, s, s]; steps.failPost = true;
   const api = labelApi(steps);
   await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
-  assert.deepStrictEqual(api.calls, ["add", "post", "remove"]);
+  assert.deepStrictEqual(api.calls, ["add", "post"]);
 });
 
-test("a cancel that arrives while the label is being added stops the post and takes the label off", async () => {
+test("a cancel that arrives while the label is being added stops the post; the label is left for the cancel run", async () => {
   const cancel = { ...ask("[MONE-REQUEST] id=W1 status=cancel"), id: 8 };
   const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
   const later = { comment: workAsk, comments: [workAsk, cancel], headSha: SHA };
   const api = labelApi([s, s, later]);
   await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
-  assert.deepStrictEqual(api.calls, ["add", "remove"]);
+  assert.deepStrictEqual(api.calls, ["add"]);
 });
 
 // ---- Regression tests for the [AMU-REVIEW] on 5b16d70 ----
 
-test("if the re-read after adding the label fails, the label is taken off", async () => {
+test("if the re-read after adding the label fails, the label stays", async () => {
   const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
   const api = labelApi([s, s, s]);
   let reads = 0;
   const list = api.listComments;
   api.listComments = async (n) => { reads += 1; if (reads === 3) throw new Error("E_API_GET_502"); return list(n); };
   await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
-  assert.deepStrictEqual(api.calls, ["add", "remove"]);
+  assert.deepStrictEqual(api.calls, ["add"]);
 });
 
 test("a post that was saved although its response was lost keeps the label", async () => {
@@ -307,3 +307,38 @@ function routedFor(id, commentId) {
   const p = plan({ repo: "o/p", thread: 13, isPullRequest: true, headSha: SHA, ownerId: 1, comment: req, comments: [req], registry: workRegistry });
   return [req, { ...botC(p.body), id: commentId + 100 }];
 }
+
+// ---- Regression tests for the [AMU-REVIEW] on 1870d86: one removal rule only ----
+
+test("cancelling one Work request keeps the label while another Work request is open", async () => {
+  const w1 = routedFor("W1", 11);
+  const w2 = routedFor("W2", 12);
+  const cancel = { ...ask("[MONE-REQUEST] id=W1 status=cancel"), id: 11 };
+  const s = { comment: cancel, comments: [cancel, w1[1], ...w2], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  const list = api.listComments;
+  api.listComments = async (n) => [...(await list(n)), ...api.posted.map((b) => ({ ...botC(b), id: 500 }))];
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["post"]);
+  assert.match(api.posted[0], /^\[AMONE-CANCELLED\] request=W1/);
+});
+
+test("cancelling the last open Work request removes the label after the cancellation is visible", async () => {
+  const w1 = routedFor("W1", 11);
+  const cancel = { ...ask("[MONE-REQUEST] id=W1 status=cancel"), id: 11 };
+  const s = { comment: cancel, comments: [cancel, w1[1]], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  const list = api.listComments;
+  api.listComments = async (n) => [...(await list(n)), ...api.posted.map((b) => ({ ...botC(b), id: 500 }))];
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["post", "remove"]);
+});
+
+test("if the cancellation is not yet visible, the label stays", async () => {
+  const w1 = routedFor("W1", 11);
+  const cancel = { ...ask("[MONE-REQUEST] id=W1 status=cancel"), id: 11 };
+  const s = { comment: cancel, comments: [cancel, w1[1]], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["post"]);
+});

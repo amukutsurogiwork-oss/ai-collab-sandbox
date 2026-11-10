@@ -122,7 +122,7 @@ async function finishWork(ctx, log) {
   if (!comment) return log("intake: comment no longer exists; nothing to do");
   if (!isValidComment(comment)) throw new IntakeError("E_COMMENT_MALFORMED");
   const isOwner = comment.author_association === "OWNER" && comment.user.id === ownerId;
-  const m = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/.exec(comment.body.trimStart());
+  const m = RESULT.exec(comment.body.trimStart());
   if (!isOwner || !m) return log("intake: not an owner result for a request; nothing to do");
   const prefix = `${repo}#${event.issue.number}#`;
   const comments = await api.listComments(event.issue.number);
@@ -132,18 +132,31 @@ async function finishWork(ctx, log) {
   if (!entry || entry.state !== "routed" || entry.lane !== "work") {
     return log("intake: no routed Work request with this ID; nothing to do");
   }
-  // Remove the label only when no Work request on this PR is still open, i.e.
-  // every routed Work request has an owner [AMU-RESULT] for its ID.
+  if (!allWorkFinished(comments, prefix, ownerId)) {
+    return log("intake: another Work request is still open; label left as is");
+  }
+  await api.removeLabel(event.issue.number);
+  log("intake: work label removed");
+}
+
+const RESULT = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/;
+
+/**
+ * The one and only rule for taking the Work label off a PR: every Work
+ * request ever recorded on this PR is finished, i.e. its record says
+ * cancelled, or the owner wrote "[AMU-RESULT] request=<ID>" for it.
+ * Returns true only when that is known for sure.
+ */
+function allWorkFinished(comments, prefix, ownerId) {
+  const { ledger, broken } = stateFromComments(comments, prefix);
+  if (broken) return false;
   const finished = new Set();
   for (const c of comments) {
     if (!isValidComment(c) || c.author_association !== "OWNER" || c.user.id !== ownerId) continue;
-    const r = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/.exec(c.body.trimStart());
+    const r = RESULT.exec(c.body.trimStart());
     if (r) finished.add(`${prefix}${r[1]}`);
   }
-  const open = Object.entries(ledger).filter(([k, e]) => e.state === "routed" && e.lane === "work" && !finished.has(k));
-  if (open.length > 0) return log("intake: another Work request is still open; label left as is");
-  await api.removeLabel(event.issue.number);
-  log("intake: work label removed");
+  return Object.entries(ledger).every(([k, e]) => e.lane !== "work" || e.state === "cancelled" || finished.has(k));
 }
 
 async function run(ctx, log = () => {}) {
@@ -163,46 +176,43 @@ async function run(ctx, log = () => {}) {
     return log("intake: state changed while processing; stopping without posting");
   }
   const number = ctx.event.issue.number;
+  if (first.label === "remove") {
+    // A Work request was cancelled. Post the cancellation, then take the label
+    // off only if the cancellation is visible and every Work request on this
+    // PR is finished. If anything is unclear, the label stays.
+    await ctx.api.postComment(number, first.body);
+    try {
+      const prefix = `${ctx.repo}#${number}#`;
+      const now = await ctx.api.listComments(number);
+      const norm = (t) => String(t).replace(/\r\n/g, "\n");
+      const visible = now.some((c) => isValidComment(c) && c.user.login === BOT_LOGIN && c.user.type === "Bot"
+        && norm(c.body) === norm(first.body));
+      if (visible && allWorkFinished(now, prefix, ctx.event.repository.owner.id)) {
+        await ctx.api.removeLabel(number);
+      } else {
+        log("intake: label left as is (cancellation not visible yet, or other Work still open)");
+      }
+    } catch {
+      log("intake: could not check the other Work requests; label left as is");
+    }
+    return;
+  }
   if (first.label !== "add") {
     await ctx.api.postComment(number, first.body);
-    if (first.label === "remove") await ctx.api.removeLabel(number);
     return;
   }
   // Work on a PR: the label must be on the PR before the routing comment
   // exists, because the comment is what wakes the Work task. If the label
-  // fails, post nothing. Adding the label takes time, so read everything once
-  // more; if anything changed (e.g. a cancel), take the label off and stop.
-  // If posting fails, take the label off again (one attempt, no retry).
+  // fails, post nothing. Then read everything once more; if anything changed
+  // (e.g. a cancel), post nothing. The label is never taken off on these
+  // paths: a left-over label only wakes Work, which then does nothing, while a
+  // label removed too early could keep Work from starting.
   await ctx.api.addLabel(number);
-  let third;
-  try {
-    third = await snapshot(ctx);
-  } catch (err) {
-    try { await ctx.api.removeLabel(number); } catch { /* reported by the original error below */ }
-    throw err;
-  }
+  const third = await snapshot(ctx);
   if (!third || third.body !== first.body || third.seen !== first.seen || third.label !== first.label) {
-    await ctx.api.removeLabel(number);
-    return log("intake: state changed while adding the label; label removed, nothing posted");
+    return log("intake: state changed while adding the label; nothing posted, label left as is");
   }
-  try {
-    await ctx.api.postComment(number, first.body);
-  } catch (err) {
-    // The comment may have been saved even though the answer was lost. Only
-    // if we can see that it was NOT saved, take the label off again. If we
-    // cannot tell, keep the label (a left-over label only wakes Work, which
-    // then ends without doing anything).
-    let saved = null;
-    try {
-      const now = await ctx.api.listComments(number);
-      const norm = (t) => String(t).replace(/\r\n/g, "\n");
-      saved = now.some((c) => c && c.user && c.user.login === BOT_LOGIN && c.user.type === "Bot" && norm(c.body) === norm(first.body));
-    } catch { saved = null; }
-    if (saved === false) {
-      try { await ctx.api.removeLabel(number); } catch { /* reported by the original error below */ }
-    }
-    throw err;
-  }
+  await ctx.api.postComment(number, first.body);
 }
 
 if (require.main === module) {

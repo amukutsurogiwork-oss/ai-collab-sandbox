@@ -15,11 +15,12 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 /** A comment as GitHub returns it. Anything else means the data is unknown. */
 function isValidComment(c) {
   return Boolean(c) && typeof c === "object"
-    && Number.isSafeInteger(c.id)
+    && Number.isSafeInteger(c.id) && c.id > 0
     && typeof c.body === "string"
     && typeof c.author_association === "string"
     && Boolean(c.user) && typeof c.user === "object"
-    && typeof c.user.login === "string" && Number.isSafeInteger(c.user.id) && typeof c.user.type === "string";
+    && typeof c.user.login === "string" && Number.isSafeInteger(c.user.id) && c.user.id > 0
+    && typeof c.user.type === "string";
 }
 
 class IntakeError extends Error {

@@ -101,3 +101,34 @@ test("a broken bot record stops instead of being silently skipped", () => {
   // a bot comment without any marker is just ignored
   assert.equal(run(c, [bot("hello")]).action, "route");
 });
+
+// ---- Regression tests for [AMU-REVIEW] round=3 and Codex P2 on 48f5207 ----
+
+test("every way of corrupting a bot record halts instead of allowing a second acceptance", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  const again = owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const cases = {
+    "unknown state": routed.replace('"state":"routed"', '"state":"route"'),
+    "empty commentIds": routed.replace(/"commentIds":\[[^\]]*\]/, '"commentIds":[]'),
+    "routed without lane": routed.replace(/"lane":"chat",?/, ""),
+    "key of another thread": routed.replace('"o/p#13#A1"', '"o/p#99#A1"'),
+    "key that is not a key": routed.replace('"o/p#13#A1"', '"A1"'),
+    "marker removed, prefix kept": routed.replace(/\n\n<!-- amone:v1 .* -->/, ""),
+    "two markers": `${routed}\n${routed.slice(routed.indexOf("<!--"))}`,
+    "notice with a non-numeric commentId": "[AMONE-STOPPED] reason=x\n\n<!-- amone:v1 {\"kind\":\"notice\",\"commentId\":\"abc\",\"reason\":\"x\"} -->",
+  };
+  for (const [name, broken] of Object.entries(cases)) {
+    assert.notEqual(broken, routed, name);
+    const r = run(again, [c, bot(broken)]);
+    assert.equal(r.body, null, name);
+    assert.equal(r.reason, "broken bot record", name);
+  }
+});
+
+test("a valid record still blocks a second acceptance, and unrelated bot comments are ignored", () => {
+  const c = owner(7, "[MONE-REQUEST] id=A1 lane=chat op=design");
+  const routed = run(c).body;
+  assert.equal(run(owner(8, "[MONE-REQUEST] id=A1 lane=chat op=design"), [c, bot(routed)]).action, "skip-duplicate");
+  assert.equal(run(c, [bot("unit tests passed")]).action, "route");
+});

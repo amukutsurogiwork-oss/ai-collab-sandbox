@@ -16,28 +16,51 @@ function marker(data) {
   return `<!-- amone:v1 ${JSON.stringify(data)} -->`;
 }
 
+const STATES = ["routed", "cancelled"];
+const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+const NUM = /^[1-9][0-9]*$/;
+const HEX = /^[0-9a-f]{7,40}$/;
+
+/** Exactly the ledger entry shapes that decide() writes. Anything else is broken. */
+function isValidEntry(e) {
+  if (!e || typeof e !== "object" || !STATES.includes(e.state)) return false;
+  if (!Array.isArray(e.commentIds) || e.commentIds.length === 0) return false;
+  if (!e.commentIds.every((x) => typeof x === "string" && NUM.test(x))) return false;
+  const optional = (v, ok) => v === undefined || ok(v);
+  const fieldsOk = optional(e.lane, (v) => typeof v === "string" && SAFE_ID.test(v))
+    && optional(e.operation, (v) => typeof v === "string" && SAFE_ID.test(v))
+    && optional(e.sha, (v) => v === null || (typeof v === "string" && HEX.test(v)))
+    && optional(e.flags, (v) => typeof v === "string");
+  if (!fieldsOk) return false;
+  // A routed entry always carries what it was routed for.
+  return e.state !== "routed" || (typeof e.lane === "string" && typeof e.operation === "string");
+}
+
 /**
  * Rebuild state from the thread itself (GitHub is the source of truth).
- * Only markers inside comments written by the Actions bot are trusted.
+ * Only comments written by the Actions bot are considered. A bot comment that
+ * looks like ours (marker or "[AMONE-" prefix) must be read exactly; otherwise
+ * the history is unknown and `broken` is set (never skipped silently).
+ * `prefix` is "<repo>#<thread>#": records for any other place are broken.
  */
-function stateFromComments(comments) {
+function stateFromComments(comments, prefix) {
   const ledger = {};
   const notices = new Set();
   let broken = false;
   for (const c of comments || []) {
     if (!c || !c.user || c.user.login !== BOT_LOGIN || c.user.type !== "Bot") continue;
     const text = String(c.body || "");
-    if (!text.includes("<!-- amone:v1")) continue; // a bot comment that is not ours
-    // From here on this is one of our records. If it cannot be read exactly
-    // (e.g. someone edited it), the history is unknown: never skip it silently.
+    const markers = text.split("<!-- amone:v1").length - 1;
+    if (markers === 0 && !text.trimStart().startsWith("[AMONE-")) continue; // not ours
+    if (markers !== 1) { broken = true; continue; }
     const m = MARK.exec(text);
     let data = null;
     if (m) { try { data = JSON.parse(m[1]); } catch { data = null; } }
-    const isEntry = (e) => Boolean(e) && typeof e === "object" && typeof e.state === "string"
-      && Array.isArray(e.commentIds) && e.commentIds.every((x) => typeof x === "string");
-    if (data && data.kind === "state" && typeof data.key === "string" && isEntry(data.entry)) {
+    const keyOk = (k) => typeof k === "string" && k.startsWith(prefix) && SAFE_ID.test(k.slice(prefix.length));
+    if (data && data.kind === "state" && keyOk(data.key) && isValidEntry(data.entry)) {
       ledger[data.key] = data.entry;
-    } else if (data && data.kind === "notice" && typeof data.commentId === "string" && typeof data.reason === "string") {
+    } else if (data && data.kind === "notice" && typeof data.commentId === "string" && NUM.test(data.commentId)
+        && typeof data.reason === "string" && data.reason.length > 0) {
       notices.add(`${data.commentId}|${data.reason}`);
     } else {
       broken = true;
@@ -60,7 +83,7 @@ function plan(input) {
   const parse = (c) => parseRequest(c.body, { repo, thread, commentId: c.id, trusted: isOwner(c) });
 
   const request = parse(comment);
-  const { ledger, notices, broken } = stateFromComments(input.comments);
+  const { ledger, notices, broken } = stateFromComments(input.comments, `${repo}#${thread}#`);
   if (broken) return { action: "halt", reason: "broken bot record", body: null };
   let d = decide(request, registry, ledger);
 

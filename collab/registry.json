@@ -13,11 +13,15 @@
         "design",
         "research",
         "pr-review",
-        "screen-check"
+        "screen-check",
+        "review",
+        "consult"
       ],
       "approvalRequired": [],
       "guiOperations": [
-        "screen-check"
+        "screen-check",
+        "review",
+        "consult"
       ],
       "notify": "github-issue",
       "priority": "normal"

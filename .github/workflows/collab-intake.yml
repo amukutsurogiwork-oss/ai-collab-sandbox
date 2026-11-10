@@ -1,7 +1,7 @@
 name: collab-intake
 
-# Receives "[MONE-REQUEST]" comments written by the repository owner and posts
-# one routing comment. It never starts Chat or Work by itself.
+# Receives "[MONE-REQUEST]" comments written by the repository owner.
+# The code lives in amone-core and is pinned to one commit.
 on:
   issue_comment:
     types: [created, edited]
@@ -11,7 +11,6 @@ permissions:
   issues: write
   pull-requests: write
 
-# One run at a time per Issue/PR. GitHub keeps only the newest waiting run.
 concurrency:
   group: collab-intake-${{ github.event.issue.number }}
   cancel-in-progress: false
@@ -25,11 +24,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Route the request
-        run: node scripts/intake.js
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: amukutsurogiwork-oss/amone-core/.github/actions/intake@243ca587337282fa0a92408c51f899035237d5c4

@@ -28,3 +28,10 @@ npm test
 ## Why this example?
 
 The baseline source code is correct. A dedicated test PR will deliberately introduce a **synthetic** authorization regression that the initial unit-test suite misses. The reviewer should independently detect the regression. Never reuse the intentionally broken candidate in real software.
+
+## AMONE intake (moved)
+
+The request router and intake workflow now live in
+[amone-core](https://github.com/amukutsurogiwork-oss/amone-core) (design: `docs/collab-design.md` there).
+This repository keeps only `.github/workflows/collab-intake.yml` (a short file pinned to one
+amone-core commit) and its one-line-per-project registration in amone-core's `collab/registry.json`.

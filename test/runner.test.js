@@ -189,12 +189,12 @@ test("if the label cannot be added, nothing is posted", async () => {
   assert.deepStrictEqual(api.calls, ["add"]);
 });
 
-test("an owner [AMU-RESULT] on a pull request removes the Work label and posts nothing", async () => {
+test("an owner [AMU-RESULT] without a routed Work record leaves the label alone and posts nothing", async () => {
   const result = ask("[AMU-RESULT] request=W1\n結果\n次の担当: モネ");
   const api = labelApi([{ comment: result, comments: [result], headSha: SHA }]);
   const ev = { ...event(true), comment: { id: 7, body: result.body } };
   await run({ event: ev, repo: "o/p", registry: workRegistry, api });
-  assert.deepStrictEqual(api.calls, ["remove"]);
+  assert.deepStrictEqual(api.calls, []);
 });
 
 test("an [AMU-RESULT] by someone else, or on an Issue, does not touch the label", async () => {
@@ -206,4 +206,48 @@ test("an [AMU-RESULT] by someone else, or on an Issue, does not touch the label"
   const api2 = labelApi([{ comment: onIssue, comments: [onIssue] }]);
   await run({ event: { ...event(false), comment: { id: 7, body: onIssue.body } }, repo: "o/p", registry: workRegistry, api: api2 });
   assert.deepStrictEqual(api2.calls, []);
+});
+
+// ---- Regression tests for the [AMU-REVIEW] on 504940c ----
+
+const { BOT_LOGIN: BOT } = require("../src/intake");
+const botC = (body) => ({ id: 900, body, author_association: "NONE", user: { login: BOT, id: 41898282, type: "Bot" } });
+async function routedWork() {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s]);
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  return botC(api.posted[0]);
+}
+
+test("[AMU-RESULT] removes the label only for an open, routed Work request of this PR", async () => {
+  const routed = await routedWork();
+  const cases = [
+    ["[AMU-RESULT] request=W1\n結果", ["remove"]],
+    ["[AMU-RESULT] request=W9\n結果", []],
+    ["[AMU-RESULT]\n結果", []],
+    ["[AMU-RESULT] request=@x\n結果", []],
+  ];
+  for (const [body, expected] of cases) {
+    const result = { ...ask(body), id: 30 };
+    const api = labelApi([{ comment: result, comments: [workAsk, routed, result], headSha: SHA }]);
+    await run({ event: { ...event(true), comment: { id: 30, body } }, repo: "o/p", registry: workRegistry, api });
+    assert.deepStrictEqual(api.calls, expected, body.split("\n")[0]);
+  }
+});
+
+test("if posting fails after the label was added, the label is taken off again", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const steps = [s, s, s]; steps.failPost = true;
+  const api = labelApi(steps);
+  await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
+  assert.deepStrictEqual(api.calls, ["add", "post", "remove"]);
+});
+
+test("a cancel that arrives while the label is being added stops the post and takes the label off", async () => {
+  const cancel = { ...ask("[MONE-REQUEST] id=W1 status=cancel"), id: 8 };
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const later = { comment: workAsk, comments: [workAsk, cancel], headSha: SHA };
+  const api = labelApi([s, s, later]);
+  await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["add", "remove"]);
 });

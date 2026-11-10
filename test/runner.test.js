@@ -251,3 +251,59 @@ test("a cancel that arrives while the label is being added stops the post and ta
   await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
   assert.deepStrictEqual(api.calls, ["add", "remove"]);
 });
+
+// ---- Regression tests for the [AMU-REVIEW] on 5b16d70 ----
+
+test("if the re-read after adding the label fails, the label is taken off", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  let reads = 0;
+  const list = api.listComments;
+  api.listComments = async (n) => { reads += 1; if (reads === 3) throw new Error("E_API_GET_502"); return list(n); };
+  await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
+  assert.deepStrictEqual(api.calls, ["add", "remove"]);
+});
+
+test("a post that was saved although its response was lost keeps the label", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  const saved = [];
+  api.postComment = async (n, b) => { api.calls.push("post"); saved.push(b); throw new Error("E_NETWORK"); };
+  const list = api.listComments;
+  api.listComments = async (n) => [...(await list(n)), ...saved.map(botC)];
+  await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
+  assert.deepStrictEqual(api.calls, ["add", "post"]);
+});
+
+test("if it cannot be checked whether the post was saved, the label is kept", async () => {
+  const s = { comment: workAsk, comments: [workAsk], headSha: SHA };
+  const api = labelApi([s, s, s]);
+  api.postComment = async () => { api.calls.push("post"); throw new Error("E_NETWORK"); };
+  let reads = 0;
+  const list = api.listComments;
+  api.listComments = async (n) => { reads += 1; if (reads === 4) throw new Error("E_API_GET_502"); return list(n); };
+  await assert.rejects(run({ event: event(true), repo: "o/p", registry: workRegistry, api }));
+  assert.deepStrictEqual(api.calls, ["add", "post"]);
+});
+
+test("a result removes the label only when no other Work request on the PR is still open", async () => {
+  const w1 = routedFor("W1", 11);
+  const w2 = routedFor("W2", 12);
+  const r1 = { ...ask("[AMU-RESULT] request=W1\n結果"), id: 21 };
+  const r2 = { ...ask("[AMU-RESULT] request=W2\n結果"), id: 22 };
+  // W2 still open: editing (re-sending) W1's result must not remove the label
+  let api = labelApi([{ comment: r1, comments: [...w1, r1, ...w2], headSha: SHA }]);
+  await run({ event: { ...event(true), comment: { id: 21, body: r1.body } }, repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, []);
+  // both finished: the last result removes it
+  api = labelApi([{ comment: r2, comments: [...w1, r1, ...w2, r2], headSha: SHA }]);
+  await run({ event: { ...event(true), comment: { id: 22, body: r2.body } }, repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, ["remove"]);
+});
+
+function routedFor(id, commentId) {
+  const { plan } = require("../src/intake");
+  const req = { ...ask(`[MONE-REQUEST] id=${id} lane=work op=screen-check sha=abc1234`), id: commentId };
+  const p = plan({ repo: "o/p", thread: 13, isPullRequest: true, headSha: SHA, ownerId: 1, comment: req, comments: [req], registry: workRegistry });
+  return [req, { ...botC(p.body), id: commentId + 100 }];
+}

@@ -7,7 +7,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { plan, stateFromComments, WORK_LABEL } = require("../src/intake");
+const { plan, stateFromComments, WORK_LABEL, BOT_LOGIN } = require("../src/intake");
 
 const MAX_PAGES = 10;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -125,12 +125,23 @@ async function finishWork(ctx, log) {
   const m = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/.exec(comment.body.trimStart());
   if (!isOwner || !m) return log("intake: not an owner result for a request; nothing to do");
   const prefix = `${repo}#${event.issue.number}#`;
-  const { ledger, broken } = stateFromComments(await api.listComments(event.issue.number), prefix);
+  const comments = await api.listComments(event.issue.number);
+  const { ledger, broken } = stateFromComments(comments, prefix);
   if (broken) return log("intake: broken bot record; label left as is");
   const entry = ledger[`${prefix}${m[1]}`];
   if (!entry || entry.state !== "routed" || entry.lane !== "work") {
     return log("intake: no routed Work request with this ID; nothing to do");
   }
+  // Remove the label only when no Work request on this PR is still open, i.e.
+  // every routed Work request has an owner [AMU-RESULT] for its ID.
+  const finished = new Set();
+  for (const c of comments) {
+    if (!isValidComment(c) || c.author_association !== "OWNER" || c.user.id !== ownerId) continue;
+    const r = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/.exec(c.body.trimStart());
+    if (r) finished.add(`${prefix}${r[1]}`);
+  }
+  const open = Object.entries(ledger).filter(([k, e]) => e.state === "routed" && e.lane === "work" && !finished.has(k));
+  if (open.length > 0) return log("intake: another Work request is still open; label left as is");
   await api.removeLabel(event.issue.number);
   log("intake: work label removed");
 }
@@ -163,7 +174,13 @@ async function run(ctx, log = () => {}) {
   // more; if anything changed (e.g. a cancel), take the label off and stop.
   // If posting fails, take the label off again (one attempt, no retry).
   await ctx.api.addLabel(number);
-  const third = await snapshot(ctx);
+  let third;
+  try {
+    third = await snapshot(ctx);
+  } catch (err) {
+    try { await ctx.api.removeLabel(number); } catch { /* reported by the original error below */ }
+    throw err;
+  }
   if (!third || third.body !== first.body || third.seen !== first.seen || third.label !== first.label) {
     await ctx.api.removeLabel(number);
     return log("intake: state changed while adding the label; label removed, nothing posted");
@@ -171,7 +188,19 @@ async function run(ctx, log = () => {}) {
   try {
     await ctx.api.postComment(number, first.body);
   } catch (err) {
-    try { await ctx.api.removeLabel(number); } catch { /* reported by the original error below */ }
+    // The comment may have been saved even though the answer was lost. Only
+    // if we can see that it was NOT saved, take the label off again. If we
+    // cannot tell, keep the label (a left-over label only wakes Work, which
+    // then ends without doing anything).
+    let saved = null;
+    try {
+      const now = await ctx.api.listComments(number);
+      const norm = (t) => String(t).replace(/\r\n/g, "\n");
+      saved = now.some((c) => c && c.user && c.user.login === BOT_LOGIN && c.user.type === "Bot" && norm(c.body) === norm(first.body));
+    } catch { saved = null; }
+    if (saved === false) {
+      try { await ctx.api.removeLabel(number); } catch { /* reported by the original error below */ }
+    }
     throw err;
   }
 }

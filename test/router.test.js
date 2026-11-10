@@ -78,13 +78,13 @@ test("approval comes from the registry, not from the comment text", () => {
 test("guard stops a side effect on cancel, repeat post or stale SHA", () => {
   const routed = decide(req("[MONE-REQUEST] id=G1 lane=codex op=pr-review sha=aaa", 1), registry);
   const r = req("[MONE-REQUEST] id=G1 lane=codex op=pr-review sha=aaa", 1);
-  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa" }).ok, true);
-  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "bbb" }).reason, "stale sha");
-  assert.equal(guardSideEffect(r, { ledger: routed.ledger }).reason, "head sha unknown");
-  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa", alreadyPosted: true }).reason, "result already posted");
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).ok, true);
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "bbb", isPullRequest: true }).reason, "stale sha");
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, isPullRequest: true }).reason, "head sha unknown");
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true, alreadyPosted: true }).reason, "result already posted");
   const cancelled = decide(req("[MONE-REQUEST] id=G1 status=cancel", 2), registry, routed.ledger);
-  assert.equal(guardSideEffect(r, { ledger: cancelled.ledger, headSha: "aaa" }).reason, "cancelled");
-  assert.equal(guardSideEffect(r, { ledger: {}, headSha: "aaa" }).reason, "not routed");
+  assert.equal(guardSideEffect(r, { ledger: cancelled.ledger, headSha: "aaa", isPullRequest: true }).reason, "cancelled");
+  assert.equal(guardSideEffect(r, { ledger: {}, headSha: "aaa", isPullRequest: true }).reason, "not routed");
 });
 
 test("invalid registry entries are reported", () => {
@@ -118,13 +118,15 @@ test("work lane needs an operation registered as GUI work", () => {
 
 test("guard only passes the exact routed request", () => {
   const routed = decide(req("[MONE-REQUEST] id=G2 lane=chat op=design sha=aaa", 1), registry);
-  const swapped = req("[MONE-REQUEST] id=G2 lane=chat op=deploy sha=aaa", 1);
-  assert.equal(guardSideEffect(swapped, { ledger: routed.ledger, headSha: "aaa" }).reason, "request changed");
+  const swapped = req("[MONE-REQUEST] id=G2 lane=chat op=pr-review sha=aaa", 1);
+  assert.equal(guardSideEffect(swapped, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).reason, "request changed");
+  const toDeploy = req("[MONE-REQUEST] id=G2 lane=chat op=deploy sha=aaa", 1);
+  assert.equal(guardSideEffect(toDeploy, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).reason, "needs approval");
   const otherSha = req("[MONE-REQUEST] id=G2 lane=chat op=design sha=bbb", 1);
-  assert.equal(guardSideEffect(otherSha, { ledger: routed.ledger, headSha: "bbb" }).reason, "request changed");
+  assert.equal(guardSideEffect(otherSha, { ledger: routed.ledger, headSha: "bbb", isPullRequest: true }).reason, "request changed");
   const fakeState = { "o/p#13#G2": { ...routed.ledger["o/p#13#G2"], state: "needs-approval" } };
   const r = req("[MONE-REQUEST] id=G2 lane=chat op=design sha=aaa", 1);
-  assert.equal(guardSideEffect(r, { ledger: fakeState, headSha: "aaa" }).reason, "not routed");
+  assert.equal(guardSideEffect(r, { ledger: fakeState, headSha: "aaa", isPullRequest: true }).reason, "not routed");
 });
 
 test("guard requires a SHA for pull request side effects", () => {
@@ -138,4 +140,50 @@ test("missing thread or unsafe IDs are rejected", () => {
   assert.equal(decide(noThread, registry).reason, "invalid thread");
   assert.equal(decide(req("[MONE-REQUEST] id=K1 lane=chat op=design", 1, { thread: "13#x" }), registry).reason, "invalid thread");
   assert.equal(decide(req("[MONE-REQUEST] id=K#1 lane=chat op=design"), registry).reason, "invalid id");
+});
+
+// ---- Regression tests for round-2 review findings on d1710b5 ----
+
+test("adding a sensitive flag by editing a routed comment is stopped by the guard", () => {
+  const routed = decide(req("[MONE-REQUEST] id=F1 lane=chat op=design sha=aaa", 3), registry);
+  const edited = req("[MONE-REQUEST] id=F1 lane=chat op=design sha=aaa flags=production", 3);
+  assert.equal(decide(edited, registry, routed.ledger).action, "skip-duplicate");
+  const g = guardSideEffect(edited, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true });
+  assert.equal(g.ok, false);
+  assert.equal(g.reason, "needs approval");
+  // any flag change at all (even order or a harmless flag) means the request changed
+  const harmless = req("[MONE-REQUEST] id=F1 lane=chat op=design sha=aaa flags=note", 3);
+  assert.equal(guardSideEffect(harmless, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).reason, "request changed");
+});
+
+test("changing the request ID of an already routed comment does not route a second request", () => {
+  const routed = decide(req("[MONE-REQUEST] id=A1 lane=chat op=design", 7), registry);
+  const renamed = decide(req("[MONE-REQUEST] id=A2 lane=chat op=design", 7), registry, routed.ledger);
+  assert.equal(renamed.action, "reject");
+  assert.equal(renamed.reason, "comment already bound to another request");
+  assert.equal(renamed.ledger, undefined);
+  // a different comment with the same ID is still a duplicate request; a different thread is fine
+  assert.equal(decide(req("[MONE-REQUEST] id=A1 lane=chat op=design", 8), registry, routed.ledger).action, "skip-duplicate");
+  assert.equal(decide(req("[MONE-REQUEST] id=A2 lane=chat op=design", 7, { thread: 99 }), registry, routed.ledger).action, "route");
+});
+
+test("guard rejects a cancel request and an unknown target type", () => {
+  const routed = decide(req("[MONE-REQUEST] id=H1 lane=codex op=pr-review sha=aaa", 1), registry);
+  const cancelNow = req("[MONE-REQUEST] id=H1 lane=codex op=pr-review sha=aaa status=cancel", 1);
+  assert.equal(guardSideEffect(cancelNow, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).reason, "request is not open");
+  const r = req("[MONE-REQUEST] id=H1 lane=codex op=pr-review sha=aaa", 1);
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa" }).reason, "target type unknown");
+  assert.equal(guardSideEffect(r, { ledger: routed.ledger, headSha: "aaa", isPullRequest: true }).ok, true);
+});
+
+test("registry validation checks list types and guiOperations", () => {
+  const base = { repo: "o/p", allowedLanes: ["work"], allowedOperations: ["design", "screen-check"] };
+  assert.ok(validateProject({ ...base, guiOperations: "screen-check" }).length > 0);
+  assert.ok(validateProject({ ...base, guiOperations: [1] }).length > 0);
+  assert.ok(validateProject({ ...base, guiOperations: ["unlisted-op"] }).length > 0);
+  assert.ok(validateProject({ ...base, allowedOperations: "design" }).length > 0);
+  assert.ok(validateProject({ ...base, approvalRequired: "deploy" }).length > 0);
+  assert.deepEqual(validateProject({ ...base, guiOperations: ["screen-check"] }), []);
+  const reg = { projects: [{ ...base, guiOperations: "screen-check" }] };
+  assert.equal(decide(req("[MONE-REQUEST] id=V1 lane=work op=check"), reg).reason, "registry entry invalid");
 });

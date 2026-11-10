@@ -14,12 +14,12 @@ COLLAB-005 の最初のPR。COLLAB-006 (v1.3, 11/9の相談) のうち、このP
 - **ルーター** `src/router.js` (純粋関数、GitHubには触らない)
   - `parseRequest`: `[MONE-REQUEST] id=<ID> lane=<chat|work|codex|mone> op=<操作> status=open|cancel sha=<SHA>` を読む。既存の書式 `[MONE-ASK]` / `[AMU-ANSWER]` / `[MONE-REQUEST]` / `[AMU-RESULT]` を維持し、新しいID体系は作らない。
   - `decide`: `route / reject / cancel / skip-duplicate / skip-cancelled / needs-approval` を返す。
-  - `guardSideEffect`: コメント投稿・書き込み・反映の **直前** に、振り分け済みか・取消・投稿済み・中身の差し替え (lane/op/SHA)・SHAのずれ・PRなのにSHAがない、を確かめて止める。
+  - `guardSideEffect`: コメント投稿・書き込み・反映の **直前** に、依頼が `open` か・振り分け済みか・取消・投稿済み・中身の差し替え (lane/op/SHA/flags)・あとから足された危険な操作やflag・SHAのずれ・PRなのにSHAがない・PRかどうかが不明、を確かめて止める。PRかどうかは、呼び出し側がGitHubの確かな情報から必ず渡す (渡さなければ止まる)。
 - **状態**: 依頼の鍵は `repo#Issue/PR番号#依頼ID`。Issue/PR番号は正の整数、依頼IDは英数字と `. _ -` だけ (区切りの `#` が混ざらない)。正本はGitHub。
 
 ## 守ること (このPRのルーター関数の中での約束)
 - 取消が最優先。振り分け済みの依頼や、元のコメントを編集しての取消も効く。取消済みの依頼は動かさない。
-- 同じコメントID・同じ依頼は、渡された台帳の上では二度振り分けない。
+- 同じコメントID・同じ依頼は、渡された台帳の上では二度振り分けない。同じコメントの依頼IDを書き換えても、2つ目の依頼にはならず拒否する。
 - 知らない `status`、`op` のない依頼、不正な番号やIDは拒否する (安全側)。
 - 承認が要るかは **登録台帳と操作の中身** で決める。コメントに「承認済み」と書いてあっても承認とみなさない。課金・本番・反映・Secrets・権限・削除・公開は、台帳の書き漏れがあっても必ず止めて聞く。
 - Workレーンは、台帳の `guiOperations` に書いた操作だけ。
@@ -34,8 +34,8 @@ COLLAB-005 の最初のPR。COLLAB-006 (v1.3, 11/9の相談) のうち、このP
 ## 検証状況 (別々に記録)
 | 項目 | 状況 |
 |---|---|
-| ルーター・重複・取消・承認・SHAガードの単体テスト | このPRで確認 (`npm test`) |
-| Codexレビュー | 未確認 |
+| ルーター・重複・取消・承認・SHAガードの単体テスト | このPRで確認 (`npm test`、テスト数は PR の説明を参照) |
+| Codexレビュー | 動作を確認済み (`@codex review` の手動依頼で起動。push だけでは自動で動かない)。修正のたびに指摘を確認中 |
 | Chat回答 | Issue #13 で別途 |
 | Work | 使っていない |
 | GitHubの出来事でChatを即時起動 | **未実現・未実証** |

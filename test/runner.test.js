@@ -228,9 +228,9 @@ test("[AMU-RESULT] removes the label only for an open, routed Work request of th
     ["[AMU-RESULT] request=@x\n結果", []],
   ];
   for (const [body, expected] of cases) {
-    const result = { ...ask(body), id: 30 };
+    const result = { ...ask(body), id: 1000 };
     const api = labelApi([{ comment: result, comments: [workAsk, routed, result], headSha: SHA }]);
-    await run({ event: { ...event(true), comment: { id: 30, body } }, repo: "o/p", registry: workRegistry, api });
+    await run({ event: { ...event(true), comment: { id: 1000, body } }, repo: "o/p", registry: workRegistry, api });
     assert.deepStrictEqual(api.calls, expected, body.split("\n")[0]);
   }
 });
@@ -289,15 +289,15 @@ test("if it cannot be checked whether the post was saved, the label is kept", as
 test("a result removes the label only when no other Work request on the PR is still open", async () => {
   const w1 = routedFor("W1", 11);
   const w2 = routedFor("W2", 12);
-  const r1 = { ...ask("[AMU-RESULT] request=W1\n結果"), id: 21 };
-  const r2 = { ...ask("[AMU-RESULT] request=W2\n結果"), id: 22 };
+  const r1 = { ...ask("[AMU-RESULT] request=W1\n結果"), id: 221 };
+  const r2 = { ...ask("[AMU-RESULT] request=W2\n結果"), id: 222 };
   // W2 still open: editing (re-sending) W1's result must not remove the label
   let api = labelApi([{ comment: r1, comments: [...w1, r1, ...w2], headSha: SHA }]);
-  await run({ event: { ...event(true), comment: { id: 21, body: r1.body } }, repo: "o/p", registry: workRegistry, api });
+  await run({ event: { ...event(true), comment: { id: 221, body: r1.body } }, repo: "o/p", registry: workRegistry, api });
   assert.deepStrictEqual(api.calls, []);
   // both finished: the last result removes it
   api = labelApi([{ comment: r2, comments: [...w1, r1, ...w2, r2], headSha: SHA }]);
-  await run({ event: { ...event(true), comment: { id: 22, body: r2.body } }, repo: "o/p", registry: workRegistry, api });
+  await run({ event: { ...event(true), comment: { id: 222, body: r2.body } }, repo: "o/p", registry: workRegistry, api });
   assert.deepStrictEqual(api.calls, ["remove"]);
 });
 
@@ -341,4 +341,20 @@ test("if the cancellation is not yet visible, the label stays", async () => {
   const api = labelApi([s, s, s]);
   await run({ event: event(true), repo: "o/p", registry: workRegistry, api });
   assert.deepStrictEqual(api.calls, ["post"]);
+});
+
+// ---- Regression test for the [AMU-REVIEW] on 5dd65ee ----
+
+test("a result written before its request was routed does not count as finishing it", async () => {
+  const early = { ...ask("[AMU-RESULT] request=W1\n古い結果"), id: 5 };   // before routing
+  const w1 = routedFor("W1", 11);                                          // routing record id 111
+  const w2 = routedFor("W2", 12);                                          // routing record id 112
+  const r2 = { ...ask("[AMU-RESULT] request=W2\n結果"), id: 230 };
+  const api = labelApi([{ comment: r2, comments: [early, ...w1, ...w2, r2], headSha: SHA }]);
+  await run({ event: { ...event(true), comment: { id: 230, body: r2.body } }, repo: "o/p", registry: workRegistry, api });
+  assert.deepStrictEqual(api.calls, []);
+  const r1 = { ...ask("[AMU-RESULT] request=W1\n結果"), id: 231 };
+  const api2 = labelApi([{ comment: r1, comments: [early, ...w1, ...w2, r2, r1], headSha: SHA }]);
+  await run({ event: { ...event(true), comment: { id: 231, body: r1.body } }, repo: "o/p", registry: workRegistry, api: api2 });
+  assert.deepStrictEqual(api2.calls, ["remove"]);
 });

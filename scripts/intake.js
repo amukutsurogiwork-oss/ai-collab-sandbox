@@ -150,11 +150,20 @@ const RESULT = /^\[AMU-RESULT\] request=([A-Za-z0-9._-]+)(?:\s|$)/;
 function allWorkFinished(comments, prefix, ownerId) {
   const { ledger, broken } = stateFromComments(comments, prefix);
   if (broken) return false;
+  // For each request, the comment ID of the bot record that routed it.
+  // GitHub comment IDs only grow, so a result counts only if it was written
+  // after that record (an older result with the same ID does not count).
+  const routedAt = {};
+  for (const c of comments) {
+    const one = stateFromComments([c], prefix).ledger;
+    for (const [k, e] of Object.entries(one)) if (e.state === "routed") routedAt[k] = c.id;
+  }
   const finished = new Set();
   for (const c of comments) {
     if (!isValidComment(c) || c.author_association !== "OWNER" || c.user.id !== ownerId) continue;
     const r = RESULT.exec(c.body.trimStart());
-    if (r) finished.add(`${prefix}${r[1]}`);
+    const k = r ? `${prefix}${r[1]}` : null;
+    if (k && routedAt[k] !== undefined && c.id > routedAt[k]) finished.add(k);
   }
   return Object.entries(ledger).every(([k, e]) => e.lane !== "work" || e.state === "cancelled" || finished.has(k));
 }

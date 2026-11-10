@@ -258,3 +258,19 @@ test("a Work request on a pull request asks for the Work label; cancelling it as
   assert.equal(onIssue.action, "route");
   assert.equal(onIssue.label, undefined);
 });
+
+// ---- Work lane: review and consult as well as screen-check ----
+
+test("the sandbox registry lets Work take review and consult requests on a PR", () => {
+  const real = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "collab", "registry.json"), "utf8"));
+  const repo = real.projects[0].repo;
+  const sha = "abc1234def5678abc1234def5678abc1234def56";
+  const go = (body) => plan({ repo, thread: 3, isPullRequest: true, headSha: sha, comment: owner(7, body), comments: [], registry: real });
+  for (const op of ["screen-check", "review", "consult"]) {
+    const r = go(`[MONE-REQUEST] id=${op}1 lane=work op=${op} sha=abc1234`);
+    assert.equal(r.action, "route", op);
+    assert.equal(r.label, "add", op);
+  }
+  assert.equal(go("[MONE-REQUEST] id=X1 lane=work op=deploy sha=abc1234").action, "needs-approval");
+  assert.equal(go("[MONE-REQUEST] id=X2 lane=work op=design sha=abc1234").reason, "work lane needs a GUI operation");
+});

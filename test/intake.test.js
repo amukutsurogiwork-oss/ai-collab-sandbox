@@ -271,6 +271,6 @@ test("the sandbox registry lets Work take review and consult requests on a PR", 
     assert.equal(r.action, "route", op);
     assert.equal(r.label, "add", op);
   }
-  assert.equal(go("[MONE-REQUEST] id=X1 lane=work op=deploy sha=abc1234").action, "needs-approval");
+  assert.equal(go("[MONE-REQUEST] id=X1 lane=work op=deploy sha=abc1234").reason, "operation not allowed for project");
   assert.equal(go("[MONE-REQUEST] id=X2 lane=work op=design sha=abc1234").reason, "work lane needs a GUI operation");
 });

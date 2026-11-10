@@ -1,0 +1,34 @@
+name: collab-intake
+
+# Receives "[MONE-REQUEST]" comments written by the repository owner and posts
+# one routing comment. It never starts Chat or Work by itself.
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+# One run at a time per Issue/PR. GitHub keeps only the newest waiting run.
+concurrency:
+  group: collab-intake-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    if: >-
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, '[MONE-REQUEST]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Route the request
+        run: node scripts/intake.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

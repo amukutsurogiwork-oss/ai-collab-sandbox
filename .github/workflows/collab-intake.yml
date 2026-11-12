@@ -24,4 +24,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: amukutsurogiwork-oss/amone-core/.github/actions/intake@9c8a4eaf7447d192802310fe30f89b3d70aea36a
+      - uses: amukutsurogiwork-oss/amone-core/.github/actions/intake@3e753b6a9265e8799d4b368ef5e3394d362052ce

@@ -1,12 +1,9 @@
-# Claude Code instructions: collaboration sandbox
+# Claude Code の決まり: ai-collab-sandbox (AMONE の相談の場所)
 
-- This is a synthetic, public-only experiment. Do not add credentials, personally identifying information, private repository contents, or real project code.
-- Limit work to this repository. Do not access, configure, or modify UtaMIX, yuhi-colorsing-system, pokopoko-colorsing-system, or production systems.
-- Claude is the only code-editing agent. Codex is an independent reviewer, not a co-editor.
-- Use a feature branch and PR; do not push to `main`, merge, or deploy.
-- Do not purchase credits, enable paid APIs, add new GitHub apps to unrelated repositories, or broaden repository permissions.
-- The test PR may intentionally contain a synthetic regression for a one-time review-trigger exercise. Do not use it outside this sandbox.
-- After the Codex review is posted, evaluate findings independently and add a regression test before correcting the issue.
-- Do not presume a missing reaction means bot comments are unsupported. Check review type, Auto-fix status, GitHub events, and the Claude session record.
-- At most two attempted fix cycles are *requested* for this trial. This is a soft instruction, not a guaranteed enforcement limit. Stop monitoring after the first verified repair if possible.
-- Report timestamps, PR link, the review author's account, review/comment format, Auto-fix activation, Claude response, commit changes, CI evidence, and uncertainty.
+このリポジトリは、AMONE の相談スレッド (アムとの相談の記録) と Work の依頼の場所です。
+古い試験 (2026-11 はじめのレビュー試験) のための決まりは、2026-11-26 によしひろさんの指示「古い決まり無くしといて」で外しました。
+
+- AMONE の決まりの正本は **amone-core の `CLAUDE.md`**。このリポジトリで始めた会話でも、amone-core を追加して、その決まりと道具 (`scripts/post.js`・`scripts/mail-send.js` など) を使ってよい。
+- 製品のリポジトリ (UtaMIX・yuhi-colorsing-system など) は、よしひろさんがその仕事を頼んだときだけ触る。
+- このリポジトリは公開されている。パスワード・鍵・ID・秘密の URL・個人データは書かない。
+- 相談スレッドや Work の依頼に直接書き込まず、amone-core の道具 (post.js) を使う。
